@@ -257,6 +257,12 @@ export function useFileTree(
 					`Failed to load dir ${dirPath}:`,
 					err,
 				);
+				setDirContents((prev) => {
+					if (prev.has(dirPath)) return prev;
+					const next = new Map(prev);
+					next.set(dirPath, []);
+					return next;
+				});
 				return [];
 			} finally {
 				pendingLoadsRef.current.delete(

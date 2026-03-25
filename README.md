@@ -22,16 +22,25 @@ curl -fsSL https://raw.githubusercontent.com/collaborator-ai/collab-public/main/
 
 Collaborator is a native desktop app built with:
 
-- **Electron 40** — desktop shell with multi-webview architecture
-- **React 19** — UI framework
-- **Tailwind CSS 4** — styling
-- **electron-vite** — build tooling with hot reload
-- **xterm.js** — terminal emulation, backed by tmux sessions for persistence
-- **Monaco Editor** — code editing with syntax highlighting
-- **BlockNote / TipTap** — rich text markdown editing
-- **D3** — force-directed graph visualization
-- **sharp** — image processing
-- **KaTeX** — math rendering in markdown
+* **Electron 40** — desktop shell with multi-webview architecture
+
+* **React 19** — UI framework
+
+* **Tailwind CSS 4** — styling
+
+* **electron-vite** — build tooling with hot reload
+
+* **xterm.js** — terminal emulation, backed by tmux sessions for persistence
+
+* **Monaco Editor** — code editing with syntax highlighting
+
+* **BlockNote / TipTap** — rich text markdown editing
+
+* **D3** — force-directed graph visualization
+
+* **sharp** — image processing
+
+* **KaTeX** — math rendering in markdown
 
 All data is stored locally on disk.
 
@@ -240,35 +249,27 @@ Canvas state is saved 500ms after each change (debounced) and immediately when t
  </picture>
 </a>
 
-## Development
+## Development | Electron App
 
 ### Prerequisites (macOS)
 
-These instructions are for macOS. You'll need a few tools installed before you can run Collaborator locally. All of them can be installed from the terminal (open Terminal.app from your Applications/Utilities folder).
+These instructions are for macOS. You'll need a few tools installed before you can run Collaborator locally. All of them can be installed using Homebrew.
 
 #### 1. Homebrew (macOS package manager)
 
-If you don't already have Homebrew, install it first — it's used to install the other tools:
+If you don't already have Homebrew, install it first:
 
 ```sh
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-After it finishes, follow any instructions it prints about adding Homebrew to your PATH.
+After it finishes, follow any instructions about adding `brew` to your PATH.
 
 #### 2. Node.js (v22+)
 
 ```sh
 brew install node
 ```
-
-Verify it's installed:
-
-```sh
-node --version
-```
-
-You should see something like `v22.x.x`.
 
 #### 3. Bun
 
@@ -278,12 +279,6 @@ Bun is used instead of npm for installing packages and running tests:
 brew install oven-sh/bun/bun
 ```
 
-Verify:
-
-```sh
-bun --version
-```
-
 #### 4. tmux
 
 tmux is the program that powers Collaborator's terminal sessions. Without it, terminals won't work:
@@ -291,14 +286,6 @@ tmux is the program that powers Collaborator's terminal sessions. Without it, te
 ```sh
 brew install tmux
 ```
-
-Verify:
-
-```sh
-tmux -V
-```
-
-You should see something like `tmux 3.x`.
 
 ### Setup
 
@@ -329,3 +316,5 @@ bun test
 ```sh
 bun run build
 ```
+
+⠀

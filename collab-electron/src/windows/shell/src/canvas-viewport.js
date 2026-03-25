@@ -4,6 +4,12 @@ const ZOOM_RUBBER_BAND_K = 400;
 const CELL = 20;
 const MAJOR = 80;
 
+const isMac = typeof navigator !== "undefined" && navigator.platform.startsWith("Mac");
+
+export function shouldZoom(e, mac = isMac) {
+	return e.ctrlKey || (mac && e.metaKey);
+}
+
 function isDark() {
 	return document.documentElement.classList.contains("dark");
 }
@@ -156,7 +162,7 @@ export function createViewport(canvasEl, gridCanvas) {
 	canvasEl.addEventListener("wheel", (e) => {
 		e.preventDefault();
 
-		if (e.ctrlKey) {
+		if (shouldZoom(e)) {
 			const rect = canvasEl.getBoundingClientRect();
 			applyZoom(e.deltaY, e.clientX - rect.left, e.clientY - rect.top);
 		} else {

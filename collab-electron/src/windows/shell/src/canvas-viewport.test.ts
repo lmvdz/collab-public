@@ -5,6 +5,31 @@
  * After modularization, update imports to use ./canvas-viewport.js.
  */
 import { describe, test, expect } from "bun:test";
+import { shouldZoom } from "./canvas-viewport.js";
+
+// -- shouldZoom modifier key routing --
+
+describe("shouldZoom", () => {
+  test("ctrlKey triggers zoom on any platform", () => {
+    expect(shouldZoom({ ctrlKey: true, metaKey: false }, true)).toBe(true);
+    expect(shouldZoom({ ctrlKey: true, metaKey: false }, false)).toBe(true);
+  });
+
+  test("metaKey triggers zoom only on macOS", () => {
+    expect(shouldZoom({ ctrlKey: false, metaKey: true }, true)).toBe(true);
+    expect(shouldZoom({ ctrlKey: false, metaKey: true }, false)).toBe(false);
+  });
+
+  test("no modifier does not trigger zoom", () => {
+    expect(shouldZoom({ ctrlKey: false, metaKey: false }, true)).toBe(false);
+    expect(shouldZoom({ ctrlKey: false, metaKey: false }, false)).toBe(false);
+  });
+
+  test("both modifiers triggers zoom", () => {
+    expect(shouldZoom({ ctrlKey: true, metaKey: true }, true)).toBe(true);
+    expect(shouldZoom({ ctrlKey: true, metaKey: true }, false)).toBe(true);
+  });
+});
 
 // -- Extracted constants and logic (from renderer.js lines 53-230) --
 

@@ -124,40 +124,6 @@ function attachClient(
   return ptyProcess;
 }
 
-export function createDetachedSession(
-  cwd?: string,
-): { sessionId: string; sessionName: string } {
-  const sessionId = crypto.randomBytes(8).toString("hex");
-  const shell = process.env.SHELL || "/bin/zsh";
-  const name = tmuxSessionName(sessionId);
-  const resolvedCwd = cwd || os.homedir();
-
-  tmuxExec(
-    "new-session", "-d",
-    "-s", name,
-    "-c", resolvedCwd,
-    "-x", "120",
-    "-y", "36",
-  );
-
-  tmuxExec(
-    "set-environment", "-t", name,
-    "COLLAB_PTY_SESSION_ID", sessionId,
-  );
-  tmuxExec(
-    "set-environment", "-t", name,
-    "SHELL", shell,
-  );
-
-  writeSessionMeta(sessionId, {
-    shell,
-    cwd: resolvedCwd,
-    createdAt: new Date().toISOString(),
-  });
-
-  return { sessionId, sessionName: name };
-}
-
 export function createSession(
   cwd?: string,
   senderWebContentsId?: number,

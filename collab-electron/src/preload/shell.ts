@@ -250,9 +250,4 @@ contextBridge.exposeInMainWorld("shellApi", {
     ipcRenderer.invoke("pty:clean-detached", activeSessionIds),
   ptyCleanupOrphanClients: (knownSessionIds: string[]): Promise<number> =>
     ipcRenderer.invoke("pty:cleanup-orphan-clients", knownSessionIds),
-
-  isITerm2Available: (): Promise<boolean> =>
-    ipcRenderer.invoke("terminal:is-iterm2-available"),
-  openInITerm2: (cwd?: string): Promise<{ sessionId: string; sessionName: string }> =>
-    ipcRenderer.invoke("terminal:open-in-iterm2", { cwd }),
 });

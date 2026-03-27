@@ -1,0 +1,486 @@
+// src/main/sidecar/server.ts
+import * as net from "node:net";
+import * as fs from "node:fs";
+import * as crypto from "node:crypto";
+import * as pty from "node-pty";
+import { RingBuffer } from "./ring-buffer";
+import {
+  makeResponse,
+  makeError,
+  makeNotification,
+  DEFAULT_RING_BUFFER_BYTES,
+  SIDECAR_VERSION,
+  type JsonRpcRequest,
+  type SessionCreateParams,
+  type SessionCreateResult,
+  type SessionReconnectParams,
+  type SessionReconnectResult,
+  type SessionInfo,
+  type PingResult,
+  type PidFileData,
+} from "./protocol";
+
+interface ServerOptions {
+  controlSocketPath: string;
+  sessionSocketDir: string;
+  pidFilePath: string;
+  token: string;
+  idleTimeoutMs?: number;
+  ringBufferBytes?: number;
+}
+
+interface Session {
+  id: string;
+  pty: pty.IPty;
+  shell: string;
+  cwd: string;
+  createdAt: string;
+  ringBuffer: RingBuffer;
+  dataServer: net.Server;
+  dataClient: net.Socket | null;
+  socketPath: string;
+  /** When non-null, PTY output is queued here instead of sent to client. */
+  reconnectQueue: Buffer[] | null;
+}
+
+export class SidecarServer {
+  private controlServer: net.Server | null = null;
+  private controlClients = new Set<net.Socket>();
+  private sessions = new Map<string, Session>();
+  private startTime = Date.now();
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly opts: Required<ServerOptions>;
+
+  constructor(opts: ServerOptions) {
+    this.opts = {
+      ...opts,
+      idleTimeoutMs: opts.idleTimeoutMs ?? 0,
+      ringBufferBytes: opts.ringBufferBytes ?? DEFAULT_RING_BUFFER_BYTES,
+    };
+  }
+
+  async start(): Promise<void> {
+    fs.mkdirSync(this.opts.sessionSocketDir, { recursive: true });
+
+    // Clean stale socket file
+    try { fs.unlinkSync(this.opts.controlSocketPath); } catch {}
+
+    // Write PID file
+    const pidData: PidFileData = {
+      pid: process.pid,
+      token: this.opts.token,
+      version: SIDECAR_VERSION,
+    };
+    fs.writeFileSync(
+      this.opts.pidFilePath,
+      JSON.stringify(pidData),
+    );
+
+    await new Promise<void>((resolve) => {
+      this.controlServer = net.createServer((sock) =>
+        this.handleControlClient(sock),
+      );
+      this.controlServer.listen(this.opts.controlSocketPath, resolve);
+    });
+
+    this.resetIdleTimer();
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+
+    // Kill all sessions (collect IDs first to avoid mutating during iteration)
+    const ids = [...this.sessions.keys()];
+    for (const id of ids) {
+      this.killSession(id);
+    }
+
+    // Close control clients
+    for (const client of this.controlClients) {
+      client.destroy();
+    }
+
+    // Close control server
+    if (this.controlServer) {
+      await new Promise<void>((resolve) =>
+        this.controlServer!.close(() => resolve()),
+      );
+    }
+
+    // Clean up files
+    try { fs.unlinkSync(this.opts.controlSocketPath); } catch {}
+    try { fs.unlinkSync(this.opts.pidFilePath); } catch {}
+  }
+
+  private handleControlClient(sock: net.Socket): void {
+    this.controlClients.add(sock);
+    this.resetIdleTimer();
+    let buf = "";
+
+    sock.on("data", (chunk) => {
+      buf += chunk.toString();
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        this.handleRpcMessage(sock, line);
+      }
+    });
+
+    sock.on("close", () => {
+      this.controlClients.delete(sock);
+      this.resetIdleTimer();
+    });
+
+    sock.on("error", () => {
+      this.controlClients.delete(sock);
+    });
+  }
+
+  private handleRpcMessage(sock: net.Socket, line: string): void {
+    let msg: JsonRpcRequest;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      sock.write(makeError(0, -32700, "Parse error"));
+      return;
+    }
+
+    const { id, method, params } = msg;
+
+    switch (method) {
+      case "sidecar.ping":
+        return this.handlePing(sock, id);
+      case "sidecar.shutdown":
+        sock.write(makeResponse(id, { ok: true }));
+        void this.shutdown().then(() => process.exit(0));
+        return;
+      case "session.create":
+        return this.handleCreate(
+          sock, id, params as unknown as SessionCreateParams,
+        );
+      case "session.reconnect":
+        return this.handleReconnect(
+          sock, id, params as unknown as SessionReconnectParams,
+        );
+      case "session.resize":
+        return this.handleResize(
+          sock, id, params as Record<string, unknown>,
+        );
+      case "session.kill":
+        return this.handleKill(
+          sock, id, params as Record<string, unknown>,
+        );
+      case "session.list":
+        return this.handleList(sock, id);
+      case "session.foreground":
+        return this.handleForeground(
+          sock, id, params as Record<string, unknown>,
+        );
+      case "session.signal":
+        return this.handleSignal(
+          sock, id, params as Record<string, unknown>,
+        );
+      default:
+        sock.write(makeError(id, -32601, `Unknown method: ${method}`));
+    }
+  }
+
+  private handlePing(sock: net.Socket, id: number): void {
+    const result: PingResult = {
+      pid: process.pid,
+      uptime: Date.now() - this.startTime,
+      version: SIDECAR_VERSION,
+      token: this.opts.token,
+    };
+    sock.write(makeResponse(id, result));
+  }
+
+  private handleCreate(
+    sock: net.Socket,
+    id: number,
+    params: SessionCreateParams,
+  ): void {
+    const sessionId = crypto.randomBytes(8).toString("hex");
+    const socketPath = this.sessionSocketPath(sessionId);
+
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      ...params.env,
+      COLLAB_PTY_SESSION_ID: sessionId,
+    };
+    // ELECTRON_RUN_AS_NODE is set on the sidecar process so it runs
+    // as plain Node.js, but must not leak into user shells — it would
+    // cause any `electron` invocation to behave as Node instead of
+    // the Electron runtime (e.g. `bun run dev` failing with
+    // "module 'electron' does not provide an export named 'BrowserWindow'").
+    delete env.ELECTRON_RUN_AS_NODE;
+    if (!env.LANG || !env.LANG.includes("UTF-8")) {
+      env.LANG = "en_US.UTF-8";
+    }
+
+    const ptyProcess = pty.spawn(params.shell, [], {
+      name: "xterm-256color",
+      cols: params.cols,
+      rows: params.rows,
+      cwd: params.cwd,
+      env,
+    });
+
+    const ringBuffer = new RingBuffer(this.opts.ringBufferBytes);
+    const session: Session = {
+      id: sessionId,
+      pty: ptyProcess,
+      shell: params.shell,
+      cwd: params.cwd,
+      createdAt: new Date().toISOString(),
+      ringBuffer,
+      dataServer: null!,
+      dataClient: null,
+      socketPath,
+      reconnectQueue: null,
+    };
+
+    // Listen for PTY output
+    ptyProcess.onData((data: string) => {
+      const buf = Buffer.from(data, "utf-8");
+      ringBuffer.write(buf);
+
+      if (session.reconnectQueue) {
+        session.reconnectQueue.push(buf);
+        return;
+      }
+
+      if (session.dataClient && !session.dataClient.destroyed) {
+        session.dataClient.write(buf);
+      }
+    });
+
+    ptyProcess.onExit(({ exitCode }) => {
+      // Notify all control clients
+      const notification = makeNotification("session.exited", {
+        sessionId,
+        exitCode,
+      });
+      for (const client of this.controlClients) {
+        client.write(notification);
+      }
+      this.cleanupSession(sessionId);
+    });
+
+    // Create per-session data socket server
+    try { fs.unlinkSync(socketPath); } catch {}
+    const dataServer = net.createServer((client) => {
+      // Last-attach-wins: close previous client
+      if (session.dataClient && !session.dataClient.destroyed) {
+        session.dataClient.destroy();
+      }
+      session.dataClient = client;
+
+      // If reconnecting, flush ring buffer snapshot + queued data
+      if (session.reconnectQueue) {
+        const snapshot = ringBuffer.snapshot();
+        if (snapshot.length > 0) {
+          client.write(snapshot);
+        }
+        for (const queued of session.reconnectQueue) {
+          client.write(queued);
+        }
+        session.reconnectQueue = null;
+      }
+
+      // Pipe client input to PTY
+      client.on("data", (data) => {
+        ptyProcess.write(data.toString());
+      });
+
+      client.on("close", () => {
+        if (session.dataClient === client) {
+          session.dataClient = null;
+        }
+      });
+
+      client.on("error", () => {
+        if (session.dataClient === client) {
+          session.dataClient = null;
+        }
+      });
+    });
+    session.dataServer = dataServer;
+    this.sessions.set(sessionId, session);
+
+    dataServer.listen(socketPath, () => {
+      this.resetIdleTimer();
+      const result: SessionCreateResult = { sessionId, socketPath };
+      sock.write(makeResponse(id, result));
+    });
+  }
+
+  private handleReconnect(
+    sock: net.Socket,
+    id: number,
+    params: SessionReconnectParams,
+  ): void {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) {
+      sock.write(
+        makeError(id, -32000, `Session not found: ${params.sessionId}`),
+      );
+      return;
+    }
+
+    // Start queuing PTY output
+    session.reconnectQueue = [];
+
+    // Resize to match new client
+    session.pty.resize(params.cols, params.rows);
+
+    // Close old data client if present
+    if (session.dataClient && !session.dataClient.destroyed) {
+      session.dataClient.destroy();
+      session.dataClient = null;
+    }
+
+    const result: SessionReconnectResult = {
+      sessionId: params.sessionId,
+      socketPath: session.socketPath,
+    };
+    sock.write(makeResponse(id, result));
+  }
+
+  private handleResize(
+    sock: net.Socket,
+    id: number,
+    params: Record<string, unknown>,
+  ): void {
+    const session = this.sessions.get(params.sessionId as string);
+    if (!session) {
+      sock.write(makeError(id, -32000, "Session not found"));
+      return;
+    }
+    session.pty.resize(
+      params.cols as number,
+      params.rows as number,
+    );
+    sock.write(makeResponse(id, { ok: true }));
+  }
+
+  private handleKill(
+    sock: net.Socket,
+    id: number,
+    params: Record<string, unknown>,
+  ): void {
+    const sessionId = params.sessionId as string;
+    this.killSession(sessionId);
+    sock.write(makeResponse(id, { ok: true }));
+  }
+
+  private handleList(sock: net.Socket, id: number): void {
+    const sessions: SessionInfo[] = [];
+    for (const s of this.sessions.values()) {
+      sessions.push({
+        sessionId: s.id,
+        shell: s.shell,
+        cwd: s.cwd,
+        pid: s.pty.pid,
+        createdAt: s.createdAt,
+      });
+    }
+    sock.write(makeResponse(id, { sessions }));
+  }
+
+  private handleForeground(
+    sock: net.Socket,
+    id: number,
+    params: Record<string, unknown>,
+  ): void {
+    const session = this.sessions.get(params.sessionId as string);
+    if (!session) {
+      sock.write(makeError(id, -32000, "Session not found"));
+      return;
+    }
+    try {
+      const { execFileSync } = require("node:child_process");
+      const out = execFileSync(
+        "ps",
+        ["-o", "pid=,comm=", "-g", String(session.pty.pid)],
+        { encoding: "utf8", timeout: 2000 },
+      ).trim();
+      const lines = out.split("\n").filter(Boolean);
+      const last = lines[lines.length - 1]?.trim();
+      const command = last
+        ? last.replace(/^\d+\s+/, "")
+        : session.shell;
+      sock.write(makeResponse(id, { command }));
+    } catch {
+      sock.write(makeResponse(id, { command: session.shell }));
+    }
+  }
+
+  private handleSignal(
+    sock: net.Socket,
+    id: number,
+    params: Record<string, unknown>,
+  ): void {
+    const session = this.sessions.get(params.sessionId as string);
+    if (!session) {
+      sock.write(makeError(id, -32000, "Session not found"));
+      return;
+    }
+    try {
+      process.kill(session.pty.pid, params.signal as string);
+      sock.write(makeResponse(id, { ok: true }));
+    } catch (err) {
+      sock.write(makeError(id, -32000, String(err)));
+    }
+  }
+
+  private killSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    session.pty.kill();
+    if (session.dataClient && !session.dataClient.destroyed) {
+      session.dataClient.destroy();
+    }
+    session.dataServer.close();
+    try { fs.unlinkSync(session.socketPath); } catch {}
+    this.sessions.delete(sessionId);
+    this.resetIdleTimer();
+  }
+
+  private cleanupSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    if (session.dataClient && !session.dataClient.destroyed) {
+      session.dataClient.destroy();
+    }
+    session.dataServer.close();
+    try { fs.unlinkSync(session.socketPath); } catch {}
+    this.sessions.delete(sessionId);
+    this.resetIdleTimer();
+  }
+
+  private resetIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.opts.idleTimeoutMs <= 0) return;
+    if (
+      this.sessions.size > 0
+      || this.controlClients.size > 0
+    ) return;
+
+    this.idleTimer = setTimeout(() => {
+      if (
+        this.sessions.size === 0
+        && this.controlClients.size === 0
+      ) {
+        void this.shutdown().then(() => process.exit(0));
+      }
+    }, this.opts.idleTimeoutMs);
+  }
+
+  private sessionSocketPath(sessionId: string): string {
+    return `${this.opts.sessionSocketDir}/${sessionId}.sock`;
+  }
+}

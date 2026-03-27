@@ -7,6 +7,7 @@ export interface SessionMeta {
   shell: string;
   cwd: string;
   createdAt: string;
+  backend?: "tmux" | "sidecar";
 }
 
 export const SESSION_DIR = path.join(

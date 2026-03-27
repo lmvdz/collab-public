@@ -6,6 +6,7 @@ import {
   Sun,
   Moon,
   Monitor,
+  Terminal,
 } from "@phosphor-icons/react";
 
 type ThemeMode = "light" | "dark" | "system";
@@ -299,6 +300,104 @@ function ShortcutList({ items }: { items: { label: string; keys: string }[] }) {
   );
 }
 
+type TerminalMode = "tmux" | "sidecar";
+
+const TERMINAL_MODES: {
+  value: TerminalMode;
+  label: string;
+  description: string;
+  deprecated?: boolean;
+}[] = [
+  {
+    value: "sidecar",
+    label: "node-pty",
+    description: "Clean scrollback rendering.",
+  },
+  {
+    value: "tmux",
+    label: "tmux",
+    description: "May cause scrollback artifacts.",
+    deprecated: true,
+  },
+];
+
+function TerminalPane() {
+  const [mode, setMode] = useState<TerminalMode>("sidecar");
+
+  useEffect(() => {
+    api.getPref("terminalMode")
+      .then((v) => {
+        if (v === "tmux" || v === "sidecar") setMode(v);
+      })
+      .catch(() => { });
+  }, []);
+
+  async function handleModeChange(value: TerminalMode) {
+    setMode(value);
+    await api.setPref("terminalMode", value);
+  }
+
+  return (
+    <div className="space-y-6 p-6">
+      <div className="space-y-1">
+        <h2 className="text-base font-semibold">Terminal</h2>
+        <p className="text-sm text-muted-foreground">
+          Changes take effect for new terminals.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Terminal backend</p>
+        <div className="space-y-1.5">
+          {TERMINAL_MODES.map(({ value, label, description, deprecated }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => { void handleModeChange(value); }}
+              className="flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left cursor-pointer"
+              style={{
+                border: `1px solid ${mode === value
+                  ? "var(--foreground)"
+                  : "color-mix(in srgb, var(--foreground) 15%, transparent)"}`,
+                backgroundColor: mode === value
+                  ? "color-mix(in srgb, var(--foreground) 6%, transparent)"
+                  : "transparent",
+              }}
+            >
+              <div
+                className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
+                style={{
+                  borderColor: mode === value
+                    ? "var(--foreground)"
+                    : "var(--muted-foreground)",
+                }}
+              >
+                {mode === value && (
+                  <div
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: "var(--foreground)" }}
+                  />
+                )}
+              </div>
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">{label}</p>
+                <p className="text-xs text-muted-foreground">
+                  {description}
+                  {deprecated && (
+                    <span style={{ color: "var(--destructive, #ef4444)" }}>
+                      {" "}Deprecated — will be removed in a future release.
+                    </span>
+                  )}
+                </p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ControlsPane() {
   return (
     <div className="space-y-6 p-6">
@@ -315,7 +414,7 @@ function ControlsPane() {
   );
 }
 
-type Pane = "appearance" | "controls";
+type Pane = "appearance" | "terminal" | "controls";
 
 const NAV_ITEMS: {
   id: Pane;
@@ -323,6 +422,7 @@ const NAV_ITEMS: {
   icon: typeof Palette;
 }[] = [
     { id: "appearance", label: "Appearance", icon: Palette },
+    { id: "terminal", label: "Terminal", icon: Terminal },
     { id: "controls", label: "Controls", icon: Keyboard },
   ];
 
@@ -445,6 +545,7 @@ export default function App() {
       {/* Content */}
       <div className="flex-1 overflow-auto">
         {activePane === "appearance" && <AppearancePane />}
+        {activePane === "terminal" && <TerminalPane />}
         {activePane === "controls" && <ControlsPane />}
       </div>
     </div>

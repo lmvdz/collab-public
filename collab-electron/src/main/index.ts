@@ -21,6 +21,7 @@ import {
   saveConfig,
   getPref,
   setPref,
+  getTerminalMode,
   type WindowState,
 } from "./config";
 import { registerIpcHandlers, setMainWindow } from "./ipc";
@@ -588,6 +589,14 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  "pty:read-meta",
+  (_event, sessionId: string) => {
+    const { readSessionMeta } = require("./tmux");
+    return readSessionMeta(sessionId);
+  },
+);
+
+ipcMain.handle(
   "pty:clean-detached",
   (_event, activeSessionIds: string[]) =>
     pty.cleanDetachedSessions(activeSessionIds),
@@ -646,6 +655,7 @@ async function shutdownBackgroundServices(): Promise<void> {
   stopPeriodicBackup();
   pty.setShuttingDown(true);
   await pty.killAllAndWait();
+  await pty.shutdownSidecarIfIdle();
   watcher.stopWorker();
   if (!DISABLE_GIT_REPLAY) gitReplay.stopWorker();
   stopJsonRpcServer();
@@ -790,6 +800,14 @@ app.whenReady().then(async () => {
   updateManager.init({
     onBeforeQuit: () => shutdownBackgroundServices(),
   });
+
+  if (getTerminalMode() === "sidecar") {
+    try {
+      await pty.ensureSidecar();
+    } catch (err) {
+      console.error("Sidecar failed to start:", err);
+    }
+  }
 
   buildAppMenu();
   createWindow();

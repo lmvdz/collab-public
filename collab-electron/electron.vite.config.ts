@@ -18,6 +18,7 @@ export default defineConfig({
         external: ["node-pty", "@parcel/watcher", "typescript", "sharp"],
         input: {
           index: resolve(__dirname, "src/main/index.ts"),
+          "pty-sidecar": resolve(__dirname, "src/main/sidecar/entry.ts"),
           "watcher-worker": resolve(
             __dirname,
             "src/main/watcher-worker.ts",

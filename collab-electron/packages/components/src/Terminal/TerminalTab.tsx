@@ -33,9 +33,10 @@ interface TerminalTabProps {
 	visible: boolean;
 	restored?: boolean;
 	scrollbackData?: string | null;
+	mode?: "tmux" | "sidecar";
 }
 
-function TerminalTab({ sessionId, visible, restored, scrollbackData }: TerminalTabProps) {
+function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: TerminalTabProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const fitRef = useRef<FitAddon | null>(null);
 
@@ -192,14 +193,16 @@ function TerminalTab({ sessionId, visible, restored, scrollbackData }: TerminalT
 			if (!chunk) return;
 			if (firstData) {
 				firstData = false;
-				if (restored) {
+				if (restored && mode !== "sidecar") {
 					// Clear viewport so tmux's initial screen
 					// draw has a clean surface. Scrollback from
 					// capture-pane stays in xterm's buffer.
 					term.write("\x1b[2J\x1b[H");
-				} else {
+				} else if (!restored) {
 					term.reset();
 				}
+				// In sidecar mode, scrollback arrives as first
+				// data socket bytes — no clear needed.
 			}
 			term.write(chunk);
 		};

@@ -47,6 +47,21 @@ window.shellApi.onPrefChanged((key, value) => {
 
 const viewport = createViewport(canvasEl, gridCanvas);
 
+/** Convert in-memory panX/panY state to a center-point for persistence. */
+function toCenterPointState(state) {
+	const { panX, panY, zoom } = state.viewport;
+	const w = canvasEl.clientWidth;
+	const h = canvasEl.clientHeight;
+	return {
+		...state,
+		viewport: {
+			centerX: (w / 2 - panX) / zoom,
+			centerY: (h / 2 - panY) / zoom,
+			zoom,
+		},
+	};
+}
+
 // -- Init --
 
 async function init() {
@@ -232,10 +247,14 @@ async function init() {
 		getAllWebviews,
 		isSpaceHeld: () => spaceHeld,
 		onSaveDebounced(state) {
-			window.shellApi.canvasSaveState(state);
+			window.shellApi.canvasSaveState(
+				toCenterPointState(state),
+			);
 		},
 		onSaveImmediate(state) {
-			window.shellApi.canvasSaveState(state);
+			window.shellApi.canvasSaveState(
+				toCenterPointState(state),
+			);
 		},
 		onNoteSurfaceFocus: noteSurfaceFocus,
 		onFocusSurface: focusSurface,
@@ -258,6 +277,9 @@ async function init() {
 				"terminal-list:focus",
 				tile?.ptySessionId || null,
 			);
+		},
+		onTileDblClick(tile) {
+			edgeIndicators.panToTile(tile);
 		},
 	});
 
@@ -1222,9 +1244,16 @@ async function init() {
 	let stateLoadedSuccessfully = false;
 	const savedState = await window.shellApi.canvasLoadState();
 	if (savedState) {
-		viewportState.panX = savedState.viewport.panX;
-		viewportState.panY = savedState.viewport.panY;
-		viewportState.zoom = savedState.viewport.zoom;
+		const { centerX, centerY, zoom } = savedState.viewport;
+		const w = canvasEl.clientWidth;
+		const h = canvasEl.clientHeight;
+		viewportState.zoom = zoom ?? 1;
+		viewportState.panX = centerX != null
+			? w / 2 - centerX * viewportState.zoom
+			: 0;
+		viewportState.panY = centerY != null
+			? h / 2 - centerY * viewportState.zoom
+			: 0;
 		viewport.updateCanvas();
 		tileManager.restoreCanvasState(savedState.tiles);
 		stateLoadedSuccessfully = true;

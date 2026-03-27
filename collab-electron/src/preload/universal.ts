@@ -239,6 +239,8 @@ contextBridge.exposeInMainWorld("api", {
     ),
   ptyDiscover: () =>
     ipcRenderer.invoke("pty:discover"),
+  ptyReadMeta: (sessionId: string) =>
+    ipcRenderer.invoke("pty:read-meta", sessionId),
   ptyCleanDetached: (activeSessionIds: string[]) =>
     ipcRenderer.invoke("pty:clean-detached", activeSessionIds),
   onPtyData: (cb: PtyDataCallback) => {

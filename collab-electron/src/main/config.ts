@@ -94,3 +94,14 @@ export function setPref(
   config.ui[key] = value;
   saveConfig(config);
 }
+
+export type TerminalMode = "tmux" | "sidecar";
+
+export function getTerminalMode(): TerminalMode {
+  const config = loadConfig();
+  const mode = getPref(config, "terminalMode");
+  if (mode === "sidecar" || mode === "tmux") {
+    return mode;
+  }
+  return "sidecar";
+}

@@ -178,6 +178,7 @@ export function createViewport(canvasEl, gridCanvas) {
 	new ResizeObserver(() => {
 		const w = canvasEl.clientWidth;
 		const h = canvasEl.clientHeight;
+		if (!state) { prevCanvasW = w; prevCanvasH = h; return; }
 		state.panX += (w - prevCanvasW) / 2;
 		state.panY += (h - prevCanvasH) / 2;
 		prevCanvasW = w;

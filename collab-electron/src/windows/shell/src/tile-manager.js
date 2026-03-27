@@ -22,6 +22,7 @@ export function createTileManager({
 	onTerminalSessionCreated,
 	onTerminalTileClosed,
 	onTileFocused,
+	onTileDblClick,
 }) {
 	/** @type {Map<string, {container: HTMLElement, contentArea: HTMLElement, titleText: HTMLElement, webview?: HTMLElement}>} */
 	const tileDOMs = new Map();
@@ -451,6 +452,12 @@ export function createTileManager({
 			},
 		});
 
+		// Double-click title bar → center tile in viewport
+		dom.titleBar.addEventListener("dblclick", (e) => {
+			e.stopPropagation();
+			if (onTileDblClick) onTileDblClick(tile);
+		});
+
 		attachDrag(dom.titleBar, tile, {
 			viewport,
 			onUpdate: repositionAllTiles,
@@ -491,6 +498,7 @@ export function createTileManager({
 			dom.container, tile, viewport,
 			repositionAllTiles,
 			getAllWebviews,
+			() => focusCanvasTile(tile.id),
 		);
 
 		tileLayer.appendChild(dom.container);

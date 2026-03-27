@@ -21,6 +21,8 @@ function App() {
   const [restored, setRestored] = useState(false);
   const [scrollbackData, setScrollbackData] =
     useState<string | null>(null);
+  const [sessionMode, setSessionMode] =
+    useState<"tmux" | "sidecar" | undefined>(undefined);
 
   useEffect(() => {
     const params = new URLSearchParams(
@@ -40,13 +42,29 @@ function App() {
           if (result.scrollback) {
             setScrollbackData(result.scrollback);
           }
+          if (result.mode) {
+            setSessionMode(result.mode);
+          }
           setSessionId(existingSessionId);
         })
-        .catch(() => {
+        .catch(async () => {
           setRestored(false);
           const est = estimateTermSize();
+          // Recover the original working directory from session
+          // metadata so the fallback session opens in the right place.
+          let fallbackCwd = cwd;
+          if (!fallbackCwd && existingSessionId) {
+            try {
+              const meta = await window.api.ptyReadMeta(
+                existingSessionId,
+              );
+              if (meta?.cwd) fallbackCwd = meta.cwd;
+            } catch {
+              // Metadata unavailable — fall through to default
+            }
+          }
           window.api
-            .ptyCreate(cwd, est.cols, est.rows)
+            .ptyCreate(fallbackCwd, est.cols, est.rows)
             .then((result) => {
               setSessionId(result.sessionId);
               window.api.notifyPtySessionId(
@@ -114,6 +132,7 @@ function App() {
       visible={true}
       restored={restored}
       scrollbackData={scrollbackData}
+      mode={sessionMode}
     />
   );
 }

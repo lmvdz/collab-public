@@ -227,6 +227,12 @@ export interface CollabApi {
       meta: { shell: string; cwd: string; createdAt: string };
     }>
   >;
+  ptyReadMeta: (sessionId: string) => Promise<{
+    shell: string;
+    cwd: string;
+    createdAt: string;
+    backend?: "tmux" | "sidecar";
+  } | null>;
   ptyCleanDetached: (activeSessionIds: string[]) => Promise<void>;
   notifyPtySessionId: (sessionId: string) => void;
   onPtyData: (cb: PtyDataCb) => void;

@@ -6,47 +6,88 @@ on:
 
 permissions:
   contents: write
+  issues: read
+  pull-requests: read
 
 jobs:
   record-signature:
-    if: |
-      github.event.issue.pull_request &&
-      github.event.comment.body == 'I have read the Contributor License Agreement (CLA) and hereby sign the CLA.'
+    if: github.event.issue.pull_request
     runs-on: ubuntu-latest
     steps:
+      - name: Find CLA signature in comment thread
+        id: find-sig
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          CLA_PHRASE: "I have read the Contributor License Agreement (CLA) and hereby sign the CLA."
+        run: |
+          set -euo pipefail
+
+          # Get the PR author
+          PR_AUTHOR=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.user.login')
+
+          # Search all comments on this PR for the CLA phrase from the PR author
+          MATCH=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq --arg author "$PR_AUTHOR" --arg phrase "$CLA_PHRASE" \
+            '[.[] | select(.user.login == $author and (.body | contains($phrase)))] | first // empty')
+
+          if [ -z "$MATCH" ]; then
+            echo "No CLA signature found from ${PR_AUTHOR}"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "signer=${PR_AUTHOR}" >> "$GITHUB_OUTPUT"
+          echo "signer_id=$(echo "$MATCH" | jq -r '.user.id')" >> "$GITHUB_OUTPUT"
+          echo "comment_id=$(echo "$MATCH" | jq -r '.id')" >> "$GITHUB_OUTPUT"
+          echo "created_at=$(echo "$MATCH" | jq -r '.created_at')" >> "$GITHUB_OUTPUT"
+          echo "repo_id=${{ github.repository_id }}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout
+        if: steps.find-sig.outputs.found == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
       - name: Record signature
+        if: steps.find-sig.outputs.found == 'true'
         env:
-          SIGNER: ${{ github.event.comment.user.login }}
+          SIGNER: ${{ steps.find-sig.outputs.signer }}
+          SIGNER_ID: ${{ steps.find-sig.outputs.signer_id }}
           PR_NUMBER: ${{ github.event.issue.number }}
-          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_ID: ${{ steps.find-sig.outputs.comment_id }}
+          CREATED_AT: ${{ steps.find-sig.outputs.created_at }}
+          REPO_ID: ${{ steps.find-sig.outputs.repo_id }}
         run: |
           set -euo pipefail
 
-          # Update .clabot contributors array
-          if ! jq -e --arg user "$SIGNER" '.contributors | index($user)' .clabot > /dev/null 2>&1; then
-            jq --arg user "$SIGNER" '.contributors += [$user]' .clabot > .clabot.tmp
-            mv .clabot.tmp .clabot
+          # Skip if already recorded
+          if jq -e --arg user "$SIGNER" '.contributors | index($user)' .clabot > /dev/null 2>&1; then
+            echo "${SIGNER} is already in .clabot"
+            exit 0
           fi
 
+          # Update .clabot contributors array
+          jq --arg user "$SIGNER" '.contributors += [$user]' .clabot > .clabot.tmp
+          mv .clabot.tmp .clabot
+
           # Append to cla-signatures.json
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           jq --arg name "$SIGNER" \
-             --arg ts "$TIMESTAMP" \
-             --argjson pr "$PR_NUMBER" \
+             --argjson id "$SIGNER_ID" \
              --argjson cid "$COMMENT_ID" \
-             '.signedContributors += [{"name": $name, "created_at": $ts, "pullRequestNo": $pr, "comment_id": $cid}]' \
+             --arg ts "$CREATED_AT" \
+             --argjson rid "$REPO_ID" \
+             --argjson pr "$PR_NUMBER" \
+             '.signedContributors += [{"name": $name, "id": $id, "comment_id": $cid, "created_at": $ts, "repoId": $rid, "pullRequestNo": $pr}]' \
              .github/cla-signatures.json > .github/cla-signatures.json.tmp
           mv .github/cla-signatures.json.tmp .github/cla-signatures.json
 
       - name: Commit and push
+        if: steps.find-sig.outputs.found == 'true'
         env:
-          SIGNER: ${{ github.event.comment.user.login }}
+          SIGNER: ${{ steps.find-sig.outputs.signer }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"

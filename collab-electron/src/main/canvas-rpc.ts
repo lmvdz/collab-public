@@ -33,7 +33,7 @@ function sendToShell(
 
     shellWindow!.webContents.send("canvas:rpc-request", {
       requestId,
-      method,
+      method: method.replace(/^canvas\./, ""),
       params,
     });
   });

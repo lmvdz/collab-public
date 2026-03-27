@@ -70,25 +70,25 @@ describe("pty lifecycle via tmux", () => {
     killAll();
   });
 
-  test("createSession returns sessionId and shell", () => {
-    const result = createSession("/tmp");
+  test("createSession returns sessionId and shell", async () => {
+    const result = await createSession("/tmp");
     expect(result.sessionId).toMatch(/^[0-9a-f]{16}$/);
     expect(result.shell).toBeTruthy();
   });
 
-  test("createSession appears in listSessions", () => {
-    const { sessionId } = createSession("/tmp");
+  test("createSession appears in listSessions", async () => {
+    const { sessionId } = await createSession("/tmp");
     expect(listSessions()).toContain(sessionId);
   });
 
-  test("killSession removes from listSessions", () => {
-    const { sessionId } = createSession("/tmp");
-    killSession(sessionId);
+  test("killSession removes from listSessions", async () => {
+    const { sessionId } = await createSession("/tmp");
+    await killSession(sessionId);
     expect(listSessions()).not.toContain(sessionId);
   });
 
-  test("createSession sets COLLAB_PTY_SESSION_ID env", () => {
-    const { sessionId } = createSession("/tmp");
+  test("createSession sets COLLAB_PTY_SESSION_ID env", async () => {
+    const { sessionId } = await createSession("/tmp");
     const name = tmuxSessionName(sessionId);
     const env = tmuxExec(
       "show-environment", "-t", name,
@@ -99,16 +99,16 @@ describe("pty lifecycle via tmux", () => {
 });
 
 describe("discoverSessions", () => {
-  test("returns empty when no tmux server running", () => {
-    const result = discoverSessions();
+  test("returns empty when no tmux server running", async () => {
+    const result = await discoverSessions();
     expect(Array.isArray(result)).toBe(true);
   });
 
-  test("discovers sessions created by createSession", () => {
-    const { sessionId } = createSession("/tmp");
+  test("discovers sessions created by createSession", async () => {
+    const { sessionId } = await createSession("/tmp");
     killAll(); // detach client, tmux session survives
 
-    const discovered = discoverSessions();
+    const discovered = await discoverSessions();
     const found = discovered.find(
       (s) => s.sessionId === sessionId,
     );
@@ -124,7 +124,7 @@ describe("discoverSessions", () => {
     deleteSessionMeta(sessionId);
   });
 
-  test("cleans up stale metadata without tmux session", () => {
+  test("cleans up stale metadata without tmux session", async () => {
     const fakeId = "deadbeefdeadbeef";
     writeSessionMeta(fakeId, {
       shell: "/bin/zsh",
@@ -132,18 +132,18 @@ describe("discoverSessions", () => {
       createdAt: new Date().toISOString(),
     });
 
-    discoverSessions();
+    await discoverSessions();
     expect(readSessionMeta(fakeId)).toBeNull();
   });
 
-  test("kills orphan tmux sessions without metadata", () => {
+  test("kills orphan tmux sessions without metadata", async () => {
     // Create a session, then delete its metadata
-    const { sessionId } = createSession("/tmp");
+    const { sessionId } = await createSession("/tmp");
     killAll();
     deleteSessionMeta(sessionId);
 
     // discoverSessions should kill the orphan
-    discoverSessions();
+    await discoverSessions();
 
     // Verify tmux session is gone
     const name = tmuxSessionName(sessionId);
@@ -158,15 +158,15 @@ describe("discoverSessions", () => {
 });
 
 describe("cleanDetachedSessions", () => {
-  test("kills sessions not in the active list", () => {
-    const { sessionId: keep } = createSession("/tmp");
-    const { sessionId: detached } = createSession("/tmp");
+  test("kills sessions not in the active list", async () => {
+    const { sessionId: keep } = await createSession("/tmp");
+    const { sessionId: detached } = await createSession("/tmp");
     killAll(); // detach clients, tmux sessions survive
 
-    cleanDetachedSessions([keep]);
+    await cleanDetachedSessions([keep]);
 
     // The kept session should still exist
-    const discovered = discoverSessions();
+    const discovered = await discoverSessions();
     expect(
       discovered.some((s) => s.sessionId === keep),
     ).toBe(true);
@@ -191,13 +191,13 @@ describe("cleanDetachedSessions", () => {
     deleteSessionMeta(detached);
   });
 
-  test("no-op when all sessions are active", () => {
-    const { sessionId } = createSession("/tmp");
+  test("no-op when all sessions are active", async () => {
+    const { sessionId } = await createSession("/tmp");
     killAll();
 
-    cleanDetachedSessions([sessionId]);
+    await cleanDetachedSessions([sessionId]);
 
-    const discovered = discoverSessions();
+    const discovered = await discoverSessions();
     expect(
       discovered.some((s) => s.sessionId === sessionId),
     ).toBe(true);
@@ -237,7 +237,7 @@ describe("cleanDetachedSessions", () => {
     await Bun.sleep(100);
 
     // Not in active list, but has an attached client
-    cleanDetachedSessions([]);
+    await cleanDetachedSessions([]);
 
     let alive = true;
     try {
@@ -262,7 +262,7 @@ describe("verifyTmuxAvailable", () => {
 
 describe("stripTrailingBlanks via scrollback", () => {
   test("scrollback capture strips trailing blank lines", async () => {
-    const { sessionId } = createSession("/tmp");
+    const { sessionId } = await createSession("/tmp");
     const name = tmuxSessionName(sessionId);
 
     // Send a known string to the session
@@ -286,6 +286,6 @@ describe("stripTrailingBlanks via scrollback", () => {
       lines.some((l) => l.includes("hello-scrollback")),
     ).toBe(true);
 
-    killSession(sessionId);
+    await killSession(sessionId);
   });
 });

@@ -21,6 +21,7 @@ import {
   saveConfig,
   getPref,
   setPref,
+  getTerminalMode,
   type WindowState,
 } from "./config";
 import { registerIpcHandlers, setMainWindow } from "./ipc";
@@ -742,6 +743,10 @@ app.whenReady().then(async () => {
   updateManager.init({
     onBeforeQuit: () => shutdownBackgroundServices(),
   });
+
+  if (getTerminalMode() === "sidecar") {
+    await pty.ensureSidecar();
+  }
 
   buildAppMenu();
   createWindow();

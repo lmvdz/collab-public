@@ -21,6 +21,8 @@ function App() {
   const [restored, setRestored] = useState(false);
   const [scrollbackData, setScrollbackData] =
     useState<string | null>(null);
+  const [sessionMode, setSessionMode] =
+    useState<"tmux" | "sidecar" | undefined>(undefined);
 
   useEffect(() => {
     const params = new URLSearchParams(
@@ -39,6 +41,9 @@ function App() {
         .then((result) => {
           if (result.scrollback) {
             setScrollbackData(result.scrollback);
+          }
+          if (result.mode) {
+            setSessionMode(result.mode);
           }
           setSessionId(existingSessionId);
         })
@@ -114,6 +119,7 @@ function App() {
       visible={true}
       restored={restored}
       scrollbackData={scrollbackData}
+      mode={sessionMode}
     />
   );
 }

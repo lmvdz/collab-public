@@ -86,24 +86,49 @@ Resize a tile.
 collab tile resize <id> --size w,h
 ```
 
-### collab viewport
+### collab tile focus
 
-Get the current viewport state: pan position (grid units) and zoom level.
-
-```bash
-collab viewport
-```
-
-### collab viewport set
-
-Set the viewport pan and/or zoom.
+Pan and zoom the viewport to bring one or more tiles into view, then flash their focus rings.
 
 ```bash
-collab viewport set [--pan x,y] [--zoom level]
+collab tile focus <id> [<id>...]
 ```
 
-- `--pan x,y`: viewport center in grid units
-- `--zoom level`: zoom factor, 0.1 to 1.0
+**Examples:**
+```bash
+# Focus a single tile
+collab tile focus tile-abc123
+
+# Focus multiple tiles (viewport zooms to fit all)
+collab tile focus tile-abc123 tile-def456
+```
+
+### collab terminal write
+
+Send input to a terminal tile. The tile must be of type `term` with an active PTY session.
+
+```bash
+collab terminal write <id> <input>
+```
+
+**Examples:**
+```bash
+# Run a command in a terminal tile
+collab terminal write tile-abc123 $'ls -la\n'
+
+# Launch Claude Code in headless JSON mode
+collab terminal write tile-abc123 $'claude -p "fix the bug" --output-format json\n'
+```
+
+### collab terminal read
+
+Read recent output from a terminal tile. Returns raw terminal output from the PTY session's ring buffer.
+
+```bash
+collab terminal read <id> [--lines N]
+```
+
+- `--lines N`: number of lines to capture (default: 50)
 
 ## Composition Patterns
 
@@ -145,14 +170,28 @@ Single tile centered with generous size.
 collab tile add code --file ./main.ts --pos 5,2 --size 40,35
 ```
 
+### Agent in a terminal
+
+Launch a Claude Code instance in a terminal tile for the human to observe.
+
+```bash
+# Create terminal, wait for PTY, then launch agent
+collab tile add term --pos 0,0
+# (use tile list to get the tile ID, then)
+collab terminal write <id> $'claude -p "summarize this project" --output-format json\n'
+# Read the result when done
+collab terminal read <id> --lines 100
+```
+
 ## Conventions
 
 1. **Always `tile list` first** to see what's already on the canvas before adding tiles.
-2. **Use viewport to frame** after arranging tiles: `collab viewport set --pan 0,0 --zoom 0.8`.
+2. **Use `tile focus` to frame** after arranging tiles so the user can see them.
 3. **Clean up when done**: remove tiles you created when they're no longer needed.
 4. **Leave 1 grid unit gap** between adjacent tiles for visual clarity.
 5. **File tiles auto-refresh**: when you write to a file that has a tile, the tile updates automatically. No need to close and reopen.
 6. **Graph tiles support incremental updates**: append nodes to a `.graph.json` file and the graph tile smoothly incorporates them.
+7. **Terminal tiles need time to initialize**: after `tile add term`, wait a few seconds before `terminal write` so the PTY session can start.
 
 ## Exit Codes
 

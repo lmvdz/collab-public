@@ -62,7 +62,7 @@ body {
 
 html.platform-win,
 body.platform-win {
-	background: var(--bg);
+	background: transparent;
 }
 
 /* ── Titlebar ── */
@@ -127,7 +127,7 @@ body.platform-win {
 }
 
 .platform-win #panel-nav {
-	background: var(--bg);
+	background: rgba(var(--bg-rgb), calc(1 - (1 - var(--canvas-opacity)) / 2));
 }
 
 #panel-nav::after {
@@ -169,7 +169,7 @@ body.platform-win {
 }
 
 .platform-win #panel-viewer {
-	background: var(--canvas-bg);
+	background: rgba(var(--canvas-bg-rgb), var(--canvas-opacity));
 }
 
 #grid-canvas {
@@ -197,7 +197,7 @@ body.platform-win {
 }
 
 .platform-win #panel-terminal {
-	background: var(--bg);
+	background: rgba(var(--bg-rgb), calc(1 - (1 - var(--canvas-opacity)) / 2));
 }
 
 #panel-terminal webview {

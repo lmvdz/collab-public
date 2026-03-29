@@ -459,6 +459,12 @@ function createWindow(): void {
     } satisfies Partial<Electron.BrowserWindowConstructorOptions>);
   }
 
+  if (process.platform === "win32") {
+    Object.assign(windowOptions, {
+      backgroundMaterial: "mica",
+    } satisfies Partial<Electron.BrowserWindowConstructorOptions>);
+  }
+
   if (useSaved) {
     windowOptions.x = state.x;
     windowOptions.y = state.y;

@@ -19,7 +19,7 @@ interface TerminalTabProps {
 	visible: boolean;
 	restored?: boolean;
 	scrollbackData?: string | null;
-	mode?: "tmux" | "sidecar";
+	mode?: "tmux" | "sidecar" | "direct";
 }
 
 function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: TerminalTabProps) {
@@ -180,7 +180,7 @@ function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: Ter
 			flushTimer = undefined;
 			if (firstData) {
 				firstData = false;
-				if (restored && mode !== "sidecar") {
+				if (restored && mode === "tmux") {
 					term.write("\x1b[2J\x1b[H");
 				} else if (!restored) {
 					term.reset();

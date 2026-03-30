@@ -457,6 +457,22 @@ function WindowsTerminalPane() {
         </p>
       </div>
 
+      <div
+        className="rounded-md px-3 py-2.5"
+        style={{
+          border:
+            "1px solid color-mix(in srgb, var(--foreground) 10%, transparent)",
+          backgroundColor:
+            "color-mix(in srgb, var(--foreground) 4%, transparent)",
+        }}
+      >
+        <p className="text-sm text-muted-foreground">
+          PowerShell terminals do not support saved sessions. Use a WSL
+          terminal if you want terminal sessions to be restored after reopening
+          the app.
+        </p>
+      </div>
+
       <div className="space-y-2">
         <p className="text-sm font-medium">Terminal target</p>
         <div className="space-y-1.5">

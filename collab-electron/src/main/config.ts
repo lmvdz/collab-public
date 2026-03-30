@@ -110,12 +110,21 @@ export function setPref(
 }
 
 export type TerminalMode = "tmux" | "sidecar";
+export type TerminalBackend = "direct" | "sidecar";
 
 export function getTerminalMode(): TerminalMode {
   if (process.platform !== "darwin") return "sidecar";
   const config = loadConfig();
   const mode = getPref(config, "terminalMode");
   if (mode === "sidecar" || mode === "tmux") return mode;
+  return "sidecar";
+}
+
+export function getTerminalBackend(): TerminalBackend {
+  if (process.platform === "win32") return "direct";
+  const config = loadConfig();
+  const backend = getPref(config, "terminalBackend");
+  if (backend === "direct" || backend === "sidecar") return backend;
   return "sidecar";
 }
 

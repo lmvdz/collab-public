@@ -1,6 +1,6 @@
 {
 	"name": "@collaborator/electron",
-	"version": "0.5.1",
+	"version": "0.6.0",
 	"private": true,
 	"license": "FSL-1.1-ALv2",
 	"type": "module",
@@ -9,12 +9,14 @@
 	],
 	"main": "out/main/index.js",
 	"scripts": {
-		"dev": "unset ELECTRON_EXEC_PATH && electron-vite dev",
+		"dev": "bun ./scripts/dev.mjs",
 		"build": "electron-vite build",
 		"preview": "electron-vite preview",
-		"package": "./scripts/package.sh",
-		"package:unsigned": "./scripts/package.sh --no-sign",
-		"release": "bun run package && bun scripts/upload-to-github.cjs",
+		"clean": "bun ./scripts/clean.mjs",
+		"clean:deep": "bun ./scripts/clean.mjs --deep",
+		"package": "bun ./scripts/package.mjs",
+		"package:unsigned": "bun ./scripts/package.mjs --no-sign",
+		"release": "bun ./scripts/package.mjs --publish",
 		"test": "bun test",
 		"test:updater": "bun test src/main/updater/github-release-fetcher.test.ts && bun test src/main/updater/downloader.test.ts && bun test src/main/updater/update-manager.test.ts",
 		"postinstall": "electron-rebuild -f -w node-pty"
@@ -44,15 +46,8 @@
 			"NOTICE"
 		],
 		"afterSign": "scripts/notarize.cjs",
+		"afterAllArtifactBuild": "scripts/fix-artifacts.cjs",
 		"extraResources": [
-			{
-				"from": "vendor/tmux/tmux",
-				"to": "tmux"
-			},
-			{
-				"from": "vendor/tmux/lib",
-				"to": "lib"
-			},
 			{
 				"from": "resources/tmux.conf",
 				"to": "tmux.conf"
@@ -64,6 +59,14 @@
 			{
 				"from": "scripts/collab-cli.sh",
 				"to": "collab-cli.sh"
+			},
+			{
+				"from": "scripts/collab.cmd",
+				"to": "collab.cmd"
+			},
+			{
+				"from": "scripts/collab.ps1",
+				"to": "collab.ps1"
 			}
 		],
 		"mac": {
@@ -77,6 +80,29 @@
 				{
 					"target": "zip",
 					"arch": "arm64"
+				}
+			]
+		},
+		"win": {
+			"target": [
+				{
+					"target": "nsis",
+					"arch": "x64"
+				}
+			]
+		},
+		"nsis": {
+			"oneClick": false,
+			"perMachine": false,
+			"allowElevation": true,
+			"allowToChangeInstallationDirectory": true
+		},
+		"linux": {
+			"category": "Development",
+			"target": [
+				{
+					"target": "AppImage",
+					"arch": "x64"
 				}
 			]
 		}
@@ -137,6 +163,7 @@
 		"electron-vite": "5.0.0",
 		"react": "19.2.4",
 		"react-dom": "19.2.4",
-		"tailwindcss": "4.2.0"
+		"tailwindcss": "4.2.0",
+		"tsx": "^4.20.3"
 	}
 }

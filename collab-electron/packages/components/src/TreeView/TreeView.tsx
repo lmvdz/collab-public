@@ -19,6 +19,7 @@ import {
 	formatRelativeTime,
 	displayFileName,
 } from './Helpers';
+import { displayBasename } from '@collab/shared/path-utils';
 import type { SortMode } from './types';
 import { SearchSortControls } from './SearchSortControls';
 import type { SearchSortControlsHandle } from './SearchSortControls';
@@ -33,7 +34,7 @@ function flattenAllFiles(nodes: TreeNode[]): FlatItem[] {
 	function walk(children: TreeNode[]) {
 		for (const node of children) {
 			if (node.kind === 'file') {
-				const fileName = node.path.split('/').pop() ?? node.name;
+				const fileName = displayBasename(node.path) || node.name;
 				items.push({
 					id: node.path,
 					kind: 'file',

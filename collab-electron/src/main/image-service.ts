@@ -1,6 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { access, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { isSubpath } from "@collab/shared/path-utils";
 import { IMAGE_EXTENSIONS, isImageFile } from "./file-filter";
 
 const NATIVE_EXTENSIONS = new Set([
@@ -74,7 +75,7 @@ function request(
 }
 
 function isInsideCacheDir(path: string): boolean {
-  return cacheDir !== null && path.startsWith(cacheDir + "/");
+  return cacheDir !== null && isSubpath(cacheDir, path);
 }
 
 export function getImageThumbnail(
@@ -173,16 +174,13 @@ export async function resolveImagePath(
 ): Promise<string | null> {
   if (!workspacePath) return null;
 
-  const isRelative = reference.includes("/");
+  const isRelative = /[\\/]/.test(reference);
 
   if (isRelative) {
-    const wsPrefix = workspacePath.endsWith("/")
-      ? workspacePath
-      : workspacePath + "/";
     const noteDir = dirname(fromNotePath);
     const fromNote = join(noteDir, reference);
     if (
-      (fromNote === workspacePath || fromNote.startsWith(wsPrefix)) &&
+      isSubpath(workspacePath, fromNote) &&
       isImageFile(fromNote) &&
       await fileExists(fromNote)
     ) {
@@ -190,7 +188,7 @@ export async function resolveImagePath(
     }
     const fromRoot = join(workspacePath, reference);
     if (
-      (fromRoot === workspacePath || fromRoot.startsWith(wsPrefix)) &&
+      isSubpath(workspacePath, fromRoot) &&
       isImageFile(fromRoot) &&
       await fileExists(fromRoot)
     ) {
@@ -209,12 +207,8 @@ export async function resolveImagePath(
   const noteDir = dirname(fromNotePath);
   const visited = new Set<string>();
 
-  const wsPrefix = workspacePath.endsWith("/")
-    ? workspacePath
-    : workspacePath + "/";
-
   let current = noteDir;
-  while (current === workspacePath || current.startsWith(wsPrefix)) {
+  while (isSubpath(workspacePath, current)) {
     const found = await findImageInDir(current, reference);
     if (found) return found;
     visited.add(current);

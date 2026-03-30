@@ -32,12 +32,43 @@ function App() {
     const isRestored = params.get("restored") === "1";
     const cwd = params.get("cwd") || undefined;
 
+    const createFreshSession = (
+      target?: string,
+      nextCwd?: string,
+    ) => {
+      const est = estimateTermSize();
+      window.api
+        .ptyCreate(nextCwd ?? cwd, est.cols, est.rows, target)
+        .then((result) => {
+          setSessionId(result.sessionId);
+          window.api.notifyPtySessionId(
+            result.sessionId,
+          );
+        })
+        .catch(() => {
+          setExited(true);
+        });
+    };
+
     if (isRestored && existingSessionId) {
       setRestored(true);
       const { cols, rows } = estimateTermSize();
 
       window.api
-        .ptyReconnect(existingSessionId, cols, rows)
+        .ptyDiscover()
+        .then((sessions) => {
+          const found = sessions.some(
+            (session) => session.sessionId === existingSessionId,
+          );
+          if (!found) {
+            throw new Error("Missing restored session");
+          }
+          return window.api.ptyReconnect(
+            existingSessionId,
+            cols,
+            rows,
+          );
+        })
         .then((result) => {
           if (result.scrollback) {
             setScrollbackData(result.scrollback);
@@ -49,31 +80,22 @@ function App() {
         })
         .catch(async () => {
           setRestored(false);
-          const est = estimateTermSize();
           // Recover the original working directory from session
           // metadata so the fallback session opens in the right place.
           let fallbackCwd = cwd;
-          if (!fallbackCwd && existingSessionId) {
+          let fallbackTarget: string | undefined;
+          if (existingSessionId) {
             try {
               const meta = await window.api.ptyReadMeta(
                 existingSessionId,
               );
-              if (meta?.cwd) fallbackCwd = meta.cwd;
+              if (!fallbackCwd && meta?.cwd) fallbackCwd = meta.cwd;
+              if (meta?.target) fallbackTarget = meta.target;
             } catch {
               // Metadata unavailable — fall through to default
             }
           }
-          window.api
-            .ptyCreate(fallbackCwd, est.cols, est.rows)
-            .then((result) => {
-              setSessionId(result.sessionId);
-              window.api.notifyPtySessionId(
-                result.sessionId,
-              );
-            })
-            .catch(() => {
-              setExited(true);
-            });
+          createFreshSession(fallbackTarget, fallbackCwd);
         });
 
       return;
@@ -84,16 +106,7 @@ function App() {
       return;
     }
 
-    const { cols, rows } = estimateTermSize();
-    window.api
-      .ptyCreate(cwd, cols, rows)
-      .then((result) => {
-        setSessionId(result.sessionId);
-        window.api.notifyPtySessionId(result.sessionId);
-      })
-      .catch(() => {
-        setExited(true);
-      });
+    createFreshSession();
   }, []);
 
   useEffect(() => {
@@ -106,8 +119,8 @@ function App() {
         setExited(true);
       }
     };
-    window.api.onPtyExit(handleExit);
-    return () => window.api.offPtyExit(handleExit);
+    window.api.onPtyExit(sessionId, handleExit);
+    return () => window.api.offPtyExit(sessionId, handleExit);
   }, [sessionId]);
 
   if (exited) {

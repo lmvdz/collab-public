@@ -8,6 +8,19 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
+// Load .env.local so GH_TOKEN can live alongside other credentials.
+const envLocalPath = path.join(__dirname, "..", ".env.local");
+if (fs.existsSync(envLocalPath)) {
+  for (const line of fs.readFileSync(envLocalPath, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const [key, ...rest] = trimmed.split("=");
+    if (key && rest.length > 0 && !(key.trim() in process.env)) {
+      process.env[key.trim()] = rest.join("=").trim().replace(/^["']|["']$/g, "");
+    }
+  }
+}
+
 const pkg = require("../package.json");
 const version = pkg.version;
 const product = pkg.build.productName;

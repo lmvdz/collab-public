@@ -6,17 +6,19 @@ Collaborator is a place to build with agents.
 
 Collaborator is an end-to-end environment for agentic development. Terminals, context files, and running code — all arranged on an infinite canvas in one place. No context switching, no tab hunting. Just your agents and your work, side by side.
 
-The app is early-stage and in active development. macOS only for now.
+The app is early-stage and in active development, with native desktop targets for macOS, Windows, and Linux. On Windows, terminal sessions can target both PowerShell and WSL2 distros.
 
 ## Install
 
-**[Download the latest release](https://github.com/collaborator-ai/collab-public/releases/latest)** (macOS, Apple Silicon)
+**[Download the latest release](https://github.com/collaborator-ai/collab-public/releases/latest)** for macOS, Windows, or Linux.
 
-Or install from the command line:
+macOS and Linux also support command-line install:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/collaborator-ai/collab-public/main/install.sh | bash
 ```
+
+Windows: use the `.exe` installer from the releases page.
 
 ## Stack
 
@@ -30,7 +32,7 @@ Collaborator is a native desktop app built with:
 
 * **electron-vite** — build tooling with hot reload
 
-* **xterm.js** — terminal emulation, backed by tmux sessions for persistence
+* **xterm.js** — terminal emulation backed by a persistent node-pty sidecar
 
 * **Monaco Editor** — code editing with syntax highlighting
 
@@ -60,7 +62,7 @@ All data is stored locally on disk.
 
 ### Application overview
 
-Collaborator is a single-window application for macOS (arm64). It operates primarily on local files with no accounts required. Anonymous, non-identifying usage analytics are collected via PostHog.
+Collaborator is a single-window application for macOS, Windows, and Linux. It operates primarily on local files with no accounts required. Anonymous, non-identifying usage analytics are collected via PostHog.
 
 The window is divided into two regions:
 
@@ -137,7 +139,7 @@ Tiles are live views, not standalone containers.
 
 * **File tiles** (note, code, image) are bound to a file on disk by absolute path. If the file is renamed, the tile updates to track the new path. If the file is deleted, the tile is closed. If the file's content changes on disk, the tile reloads.
 
-* **Terminal tiles** are bound to a tmux session. Each terminal tile creates and manages its own session, which persists independently of the tile's lifecycle on the canvas.
+* **Terminal tiles** are bound to a persistent sidecar-backed PTY session. Each terminal tile creates and manages its own session, which persists independently of the tile's lifecycle on the canvas.
 
 #### Tile management
 
@@ -251,41 +253,18 @@ Canvas state is saved 500ms after each change (debounced) and immediately when t
 
 ## Development | Electron App
 
-### Prerequisites (macOS)
+### Prerequisites
 
-These instructions are for macOS. You'll need a few tools installed before you can run Collaborator locally. All of them can be installed using Homebrew.
+Install:
 
-#### 1. Homebrew (macOS package manager)
+* Node.js 22+
+* Bun
 
-If you don't already have Homebrew, install it first:
+Platform notes:
 
-```sh
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-After it finishes, follow any instructions about adding `brew` to your PATH.
-
-#### 2. Node.js (v22+)
-
-```sh
-brew install node
-```
-
-#### 3. Bun
-
-Bun is used instead of npm for installing packages and running tests:
-
-```sh
-brew install oven-sh/bun/bun
-```
-
-#### 4. tmux
-
-tmux is the program that powers Collaborator's terminal sessions. Without it, terminals won't work:
-
-```sh
-brew install tmux
-```
+* macOS: Homebrew is the simplest way to install Node.js and Bun.
+* Windows: PowerShell 7 is recommended; WSL2 support requires at least one installed distro.
+* Linux: install Node.js and Bun from your distro packages or upstream installers.
 
 ### Setup
 

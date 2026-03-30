@@ -1,3 +1,5 @@
+import { splitDisplayPath } from "@collab/shared/path-utils";
+
 /**
  * Creates the DOM structure for a tile.
  * @param {import('./canvas-state.js').Tile} tile
@@ -173,7 +175,11 @@ export function createTileDOM(tile, callbacks) {
 }
 
 export function getTileLabel(tile) {
-  if (tile.type === "term") return { parent: "", name: "Terminal" };
+  if (tile.type === "term") {
+    if (tile.cwd) return splitFilepath(tile.cwd);
+    if (tile.displayName) return { parent: "", name: tile.displayName };
+    return { parent: "", name: "Terminal" };
+  }
   if (tile.type === "browser") {
     if (tile.url) {
       try { return { parent: "", name: new URL(tile.url).hostname }; }
@@ -190,10 +196,7 @@ export function getTileLabel(tile) {
 }
 
 export function splitFilepath(path) {
-  const parts = path.split("/");
-  const name = parts.pop() || path;
-  const parent = parts.length > 0 ? parts.join("/") + "/" : "";
-  return { parent, name };
+  return splitDisplayPath(path);
 }
 
 export function updateTileTitle(dom, tile) {
@@ -208,7 +211,7 @@ export function updateTileTitle(dom, tile) {
   nameSpan.textContent = label.name;
   titleText.appendChild(parentSpan);
   titleText.appendChild(nameSpan);
-  titleText.title = tile.filePath || tile.folderPath || "";
+  titleText.title = tile.filePath || tile.folderPath || tile.cwd || "";
 }
 
 /**

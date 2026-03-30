@@ -1,14 +1,18 @@
 // src/main/sidecar/protocol.ts
 import { join } from "node:path";
 import { COLLAB_DIR } from "../paths";
+import { makeEndpointPath } from "../ipc-endpoint";
 
 export const SIDECAR_VERSION = 1;
 
-export const SIDECAR_SOCKET_PATH = join(COLLAB_DIR, "pty-sidecar.sock");
+export const SIDECAR_SOCKET_PATH = makeEndpointPath("pty-sidecar");
 export const SIDECAR_PID_PATH = join(COLLAB_DIR, "pty-sidecar.pid");
 export const SESSION_SOCKET_DIR = join(COLLAB_DIR, "pty-sessions");
 
 export function sessionSocketPath(sessionId: string): string {
+  if (process.platform === "win32") {
+    return makeEndpointPath(`pty-session-${sessionId}`);
+  }
   return join(SESSION_SOCKET_DIR, `${sessionId}.sock`);
 }
 
@@ -83,7 +87,12 @@ export interface PidFileData {
 
 // session.create params/result
 export interface SessionCreateParams {
-  shell: string;
+  command: string;
+  args: string[];
+  displayName: string;
+  target: string;
+  cwdHostPath: string;
+  cwdGuestPath?: string;
   cwd: string;
   cols: number;
   rows: number;
@@ -111,7 +120,11 @@ export interface SessionReconnectResult {
 export interface SessionInfo {
   sessionId: string;
   shell: string;
+  displayName: string;
+  target: string;
   cwd: string;
+  cwdHostPath: string;
+  cwdGuestPath?: string;
   pid: number;
   createdAt: string;
 }

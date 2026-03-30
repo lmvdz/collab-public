@@ -21,8 +21,8 @@ import {
   saveConfig,
   getPref,
   setPref,
-  getTerminalMode,
   type WindowState,
+  type TerminalTarget,
 } from "./config";
 import { registerIpcHandlers, setMainWindow } from "./ipc";
 import { registerCanvasRpc } from "./canvas-rpc";
@@ -45,6 +45,8 @@ import {
 } from "./analytics";
 import { stopImageWorker } from "./image-service";
 import { installCli } from "./cli-installer";
+import { listTerminalTargets } from "./terminal-target";
+import { readSessionMeta } from "./tmux";
 
 // macOS apps launched from Finder don't inherit the user's shell
 // LANG, so child processes (tmux, shells) default to ASCII.
@@ -286,6 +288,7 @@ function applyZoomToAll(level: number): void {
 
 function buildAppMenu(): void {
   const isMac = process.platform === "darwin";
+  const fullScreenAccelerator = isMac ? "Ctrl+Cmd+F" : "F11";
 
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac
@@ -391,7 +394,7 @@ function buildAppMenu(): void {
         { role: "toggleDevTools" },
         {
           label: "Toggle Full Screen",
-          accelerator: "Ctrl+Cmd+F",
+          accelerator: fullScreenAccelerator,
           click: (_, win) => win?.setFullScreen(!win.isFullScreen()),
         },
       ],
@@ -439,10 +442,6 @@ function createWindow(): void {
     height: state.height,
     minWidth: 400,
     minHeight: 400,
-    titleBarStyle: "hidden",
-    vibrancy: "under-window",
-    visualEffectState: "active",
-    trafficLightPosition: { x: 14, y: 12 },
     webPreferences: {
       preload: getPreloadPath("shell"),
       contextIsolation: true,
@@ -450,6 +449,22 @@ function createWindow(): void {
       webviewTag: true,
     },
   };
+
+  if (process.platform === "darwin") {
+    Object.assign(windowOptions, {
+      titleBarStyle: "hidden",
+      vibrancy: "under-window",
+      visualEffectState: "active",
+      trafficLightPosition: { x: 14, y: 12 },
+    } satisfies Partial<Electron.BrowserWindowConstructorOptions>);
+  }
+
+  if (process.platform === "win32") {
+    Object.assign(windowOptions, {
+      backgroundColor: "#00000000",
+      backgroundMaterial: "mica",
+    } satisfies Partial<Electron.BrowserWindowConstructorOptions>);
+  }
 
   if (useSaved) {
     windowOptions.x = state.x;
@@ -523,6 +538,11 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  "terminal:list-targets",
+  () => listTerminalTargets(),
+);
+
+ipcMain.handle(
   "theme:set",
   (_event, mode: string) => {
     const valid = mode === "light" || mode === "dark" ? mode : "system";
@@ -533,8 +553,22 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:create",
-  (event, params?: { cwd?: string; cols?: number; rows?: number }) =>
-    pty.createSession(params?.cwd, event.sender.id, params?.cols, params?.rows),
+  (
+    event,
+    params?: {
+      cwd?: string;
+      cols?: number;
+      rows?: number;
+      target?: TerminalTarget;
+    },
+  ) =>
+    pty.createSession(
+      params?.cwd,
+      event.sender.id,
+      params?.cols,
+      params?.rows,
+      params?.target,
+    ),
 );
 
 ipcMain.handle(
@@ -589,10 +623,7 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:read-meta",
-  (_event, sessionId: string) => {
-    const { readSessionMeta } = require("./tmux");
-    return readSessionMeta(sessionId);
-  },
+  (_event, sessionId: string) => readSessionMeta(sessionId),
 );
 
 ipcMain.handle(
@@ -732,17 +763,6 @@ app.whenReady().then(async () => {
 
   shuttingDown = false;
 
-  const tmuxCheck = pty.verifyTmuxAvailable();
-  if (!tmuxCheck.ok) {
-    console.error("tmux check failed:", tmuxCheck.message);
-    if (!app.isPackaged) {
-      dialog.showErrorBox(
-        "tmux not found",
-        `${tmuxCheck.message}\n\nThe terminal will not work until tmux is installed and on your PATH.`,
-      );
-    }
-  }
-
   config = loadConfig();
   installCli();
   watcher.startWorker();
@@ -753,12 +773,10 @@ app.whenReady().then(async () => {
     onBeforeQuit: () => shutdownBackgroundServices(),
   });
 
-  if (getTerminalMode() === "sidecar") {
-    try {
-      await pty.ensureSidecar();
-    } catch (err) {
-      console.error("Sidecar failed to start:", err);
-    }
+  try {
+    await pty.ensureSidecar();
+  } catch (err) {
+    console.error("Sidecar failed to start:", err);
   }
 
   buildAppMenu();

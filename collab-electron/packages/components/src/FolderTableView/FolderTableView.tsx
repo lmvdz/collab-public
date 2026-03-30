@@ -8,6 +8,7 @@ import type {
 	FolderTableData,
 	FolderTableFile,
 } from '@collab/shared/types';
+import { displayBasename } from '@collab/shared/path-utils';
 import './FolderTableView.css';
 
 type SortDirection = 'asc' | 'desc';
@@ -25,8 +26,7 @@ interface FolderTableViewProps {
 function extractFolderName(
 	folderPath: string,
 ): string {
-	const parts = folderPath.replace(/\/+$/, '').split('/');
-	return parts[parts.length - 1] ?? folderPath;
+	return displayBasename(folderPath) || folderPath;
 }
 
 function formatCellValue(value: unknown): string {

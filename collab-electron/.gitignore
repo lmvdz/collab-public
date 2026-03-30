@@ -40,7 +40,6 @@ electron/out/
 # Back up these files separately when migrating machines
 .claude/
 CLAUDE.md
-build/
 docs/
 dev-app-update.yml
 build-debug.log

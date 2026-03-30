@@ -52,11 +52,7 @@ export function createWorkspaceManager({
 
 		for (let i = 0; i < workspaces.length; i++) {
 			const ws = workspaces[i];
-			const parts = ws.path.split("/");
-			const name = parts.pop() || ws.path;
-			const parent = parts.length > 1
-				? parts.slice(-2).join("/") + "/"
-				: "";
+			const { parent, name } = splitFilepath(ws.path);
 
 			const item = document.createElement("button");
 			item.type = "button";

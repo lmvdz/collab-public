@@ -1,33 +1,21 @@
-#!/usr/bin/env node
-
-// Apple notarization — electron-builder afterSign hook.
-// Reads credentials from env vars or .env.local.
-
 const { notarize } = require("@electron/notarize");
-const { spawnSync } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
 
-const envLocalPath = path.join(__dirname, "..", ".env.local");
-if (fs.existsSync(envLocalPath)) {
+function loadEnvLocal() {
+  const envLocalPath = path.join(__dirname, "..", ".env.local");
+  if (!fs.existsSync(envLocalPath)) return;
   const content = fs.readFileSync(envLocalPath, "utf8");
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const [key, ...rest] = trimmed.split("=");
-    if (key && rest.length > 0) {
-      const value = rest.join("=").trim().replace(/^["']|["']$/g, "");
-      process.env[key.trim()] = value;
+    if (key && rest.length > 0 && !(key.trim() in process.env)) {
+      process.env[key.trim()] = rest.join("=").trim().replace(/^["']|["']$/g, "");
     }
   }
 }
-
-const KEYCHAIN_PROFILE = process.env.KEYCHAIN_PROFILE;
-const APPLE_ID = process.env.APPLE_ID;
-const APPLE_ID_PASSWORD =
-  process.env.APPLE_ID_PASSWORD ||
-  process.env.APPLE_APP_SPECIFIC_PASSWORD;
-const APPLE_TEAM_ID = process.env.APPLE_TEAM_ID;
 
 async function notarizeApp(context) {
   const { electronPlatformName, appOutDir, packager } = context;
@@ -42,6 +30,20 @@ async function notarizeApp(context) {
     return;
   }
 
+  loadEnvLocal();
+
+  const keychainProfile = process.env.KEYCHAIN_PROFILE;
+  const appleId = process.env.APPLE_ID;
+  const appleIdPassword =
+    process.env.APPLE_ID_PASSWORD ||
+    process.env.APPLE_APP_SPECIFIC_PASSWORD;
+  const appleTeamId = process.env.APPLE_TEAM_ID;
+
+  if (!keychainProfile && !(appleId && appleIdPassword && appleTeamId)) {
+    console.log("Skipping notarization (credentials not configured)");
+    return;
+  }
+
   const appName = packager.appInfo.productFilename;
   const appPath = path.join(appOutDir, `${appName}.app`);
 
@@ -52,26 +54,19 @@ async function notarizeApp(context) {
   console.log(`Notarizing ${appPath}`);
 
   const options = {
-    appBundleId: "com.collaborator.desktop",
+    appBundleId: packager.appInfo.id,
     appPath,
     tool: "notarytool",
   };
 
-  if (KEYCHAIN_PROFILE) {
-    console.log(`  Using keychain profile: ${KEYCHAIN_PROFILE}`);
-    options.keychainProfile = KEYCHAIN_PROFILE;
-  } else if (APPLE_ID && APPLE_ID_PASSWORD && APPLE_TEAM_ID) {
-    console.log(`  Using Apple ID: ${APPLE_ID}`);
-    options.appleId = APPLE_ID;
-    options.appleIdPassword = APPLE_ID_PASSWORD;
-    options.teamId = APPLE_TEAM_ID;
+  if (keychainProfile) {
+    console.log(`  Using keychain profile: ${keychainProfile}`);
+    options.keychainProfile = keychainProfile;
   } else {
-    throw new Error(
-      "Missing notarization credentials. Provide either:\n" +
-        "  KEYCHAIN_PROFILE, or\n" +
-        "  APPLE_ID + APPLE_ID_PASSWORD + APPLE_TEAM_ID\n" +
-        "Set in .env.local or environment variables.",
-    );
+    console.log(`  Using Apple ID: ${appleId}`);
+    options.appleId = appleId;
+    options.appleIdPassword = appleIdPassword;
+    options.teamId = appleTeamId;
   }
 
   const start = Date.now();

@@ -14,6 +14,11 @@ type ThemeMode = "light" | "dark" | "system";
 interface SettingsApi {
   getPref: (key: string) => Promise<unknown>;
   setPref: (key: string, value: unknown) => Promise<void>;
+  listTerminalTargets: () => Promise<Array<{
+    id: string;
+    label: string;
+    isDefault?: boolean;
+  }>>;
   setTheme: (mode: string) => Promise<void>;
   getAppVersion: () => Promise<string>;
   getAgents: () => Promise<AgentStatus[]>;
@@ -230,9 +235,7 @@ function AppearancePane() {
   );
 }
 
-const IS_MAC =
-  typeof navigator !== "undefined" &&
-  /mac/i.test(navigator.userAgent);
+const IS_MAC = window.api.getPlatform() === "darwin";
 
 const MOD = IS_MAC ? "\u2318" : "Ctrl+";
 const SHIFT = IS_MAC ? "\u21E7" : "Shift+";
@@ -300,41 +303,32 @@ function ShortcutList({ items }: { items: { label: string; keys: string }[] }) {
   );
 }
 
-type TerminalMode = "tmux" | "sidecar";
+type TerminalTarget = string;
 
-const TERMINAL_MODES: {
-  value: TerminalMode;
+type TerminalTargetOption = {
+  id: string;
   label: string;
-  description: string;
-  deprecated?: boolean;
-}[] = [
-  {
-    value: "sidecar",
-    label: "node-pty",
-    description: "Clean scrollback rendering.",
-  },
-  {
-    value: "tmux",
-    label: "tmux",
-    description: "May cause scrollback artifacts.",
-    deprecated: true,
-  },
-];
+  isDefault?: boolean;
+};
 
 function TerminalPane() {
-  const [mode, setMode] = useState<TerminalMode>("sidecar");
+  const [target, setTarget] = useState<TerminalTarget>("auto");
+  const [options, setOptions] = useState<TerminalTargetOption[]>([]);
 
   useEffect(() => {
-    api.getPref("terminalMode")
+    api.getPref("terminalTarget")
       .then((v) => {
-        if (v === "tmux" || v === "sidecar") setMode(v);
+        if (typeof v === "string") setTarget(v);
       })
+      .catch(() => { });
+    api.listTerminalTargets()
+      .then((items) => setOptions(items))
       .catch(() => { });
   }, []);
 
-  async function handleModeChange(value: TerminalMode) {
-    setMode(value);
-    await api.setPref("terminalMode", value);
+  async function handleTargetChange(value: TerminalTarget) {
+    setTarget(value);
+    await api.setPref("terminalTarget", value);
   }
 
   return (
@@ -347,19 +341,19 @@ function TerminalPane() {
       </div>
 
       <div className="space-y-2">
-        <p className="text-sm font-medium">Terminal backend</p>
+        <p className="text-sm font-medium">Terminal target</p>
         <div className="space-y-1.5">
-          {TERMINAL_MODES.map(({ value, label, description, deprecated }) => (
+          {options.map(({ id, label, isDefault }) => (
             <button
-              key={value}
+              key={id}
               type="button"
-              onClick={() => { void handleModeChange(value); }}
+              onClick={() => { void handleTargetChange(id); }}
               className="flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left cursor-pointer"
               style={{
-                border: `1px solid ${mode === value
+                border: `1px solid ${target === id
                   ? "var(--foreground)"
                   : "color-mix(in srgb, var(--foreground) 15%, transparent)"}`,
-                backgroundColor: mode === value
+                backgroundColor: target === id
                   ? "color-mix(in srgb, var(--foreground) 6%, transparent)"
                   : "transparent",
               }}
@@ -367,12 +361,12 @@ function TerminalPane() {
               <div
                 className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
                 style={{
-                  borderColor: mode === value
+                  borderColor: target === id
                     ? "var(--foreground)"
                     : "var(--muted-foreground)",
                 }}
               >
-                {mode === value && (
+                {target === id && (
                   <div
                     className="h-2 w-2 rounded-full"
                     style={{ backgroundColor: "var(--foreground)" }}
@@ -382,12 +376,9 @@ function TerminalPane() {
               <div className="space-y-0.5">
                 <p className="text-sm font-medium">{label}</p>
                 <p className="text-xs text-muted-foreground">
-                  {description}
-                  {deprecated && (
-                    <span style={{ color: "var(--destructive, #ef4444)" }}>
-                      {" "}Deprecated — will be removed in a future release.
-                    </span>
-                  )}
+                  {isDefault
+                    ? "Recommended default for this platform."
+                    : "Available for new terminals."}
                 </p>
               </div>
             </button>

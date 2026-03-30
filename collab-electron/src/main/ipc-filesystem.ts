@@ -2,6 +2,7 @@ import { ipcMain, shell, type BrowserWindow } from "electron";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import fm from "front-matter";
+import { workspaceRootMatch } from "@collab/shared/path-utils";
 import {
   countTreeFiles,
   fsReadDir,
@@ -128,10 +129,7 @@ export function registerFilesystemHandlers(
       if (sanitized.length === 0) {
         throw new Error("Title cannot be empty");
       }
-      const dotIndex = oldPath.lastIndexOf(".");
-      const slashIndex = oldPath.lastIndexOf("/");
-      const ext =
-        dotIndex > slashIndex ? oldPath.slice(dotIndex) : "";
+      const ext = extname(oldPath);
       bumpRenameRefCount(oldPath);
       const newPath = await fsRename(
         oldPath,
@@ -246,11 +244,7 @@ export function registerFilesystemHandlers(
       folderPath: string,
     ): Promise<FolderTableData> => {
       const workspace = ctx.getActiveWorkspacePath();
-      if (
-        !workspace ||
-        (!folderPath.startsWith(workspace + "/") &&
-          folderPath !== workspace)
-      ) {
+      if (!workspace || !workspaceRootMatch(workspace, folderPath)) {
         throw new Error("Folder is outside workspace");
       }
       const entries = await readdir(folderPath, {
@@ -337,10 +331,7 @@ export function registerFilesystemHandlers(
       buffer: ArrayBuffer,
     ) => {
       const ws = ctx.getActiveWorkspacePath();
-      if (
-        !ws ||
-        (noteDir !== ws && !noteDir.startsWith(ws + "/"))
-      ) {
+      if (!ws || !workspaceRootMatch(ws, noteDir)) {
         throw new Error("Target directory is outside workspace");
       }
       return saveDroppedImage(

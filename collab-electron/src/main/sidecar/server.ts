@@ -3,6 +3,8 @@ import * as net from "node:net";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
 import * as pty from "node-pty";
+import { displayCommandName } from "@collab/shared/path-utils";
+import { cleanupEndpoint, prepareEndpoint } from "../ipc-endpoint";
 import { RingBuffer } from "./ring-buffer";
 import {
   makeResponse,
@@ -10,6 +12,7 @@ import {
   makeNotification,
   DEFAULT_RING_BUFFER_BYTES,
   SIDECAR_VERSION,
+  sessionSocketPath as buildSessionSocketPath,
   type JsonRpcRequest,
   type SessionCreateParams,
   type SessionCreateResult,
@@ -33,12 +36,17 @@ interface Session {
   id: string;
   pty: pty.IPty;
   shell: string;
+  displayName: string;
+  target: string;
   cwd: string;
+  cwdHostPath: string;
+  cwdGuestPath?: string;
   createdAt: string;
   ringBuffer: RingBuffer;
   dataServer: net.Server;
   dataClient: net.Socket | null;
   socketPath: string;
+  hasAttachedClient: boolean;
   /** When non-null, PTY output is queued here instead of sent to client. */
   reconnectQueue: Buffer[] | null;
 }
@@ -59,11 +67,23 @@ export class SidecarServer {
     };
   }
 
-  async start(): Promise<void> {
-    fs.mkdirSync(this.opts.sessionSocketDir, { recursive: true });
+  private withOptional<T extends object>(
+    base: T,
+    fields: Record<string, unknown>,
+  ): T {
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) {
+        Object.assign(base, { [key]: value });
+      }
+    }
+    return base;
+  }
 
-    // Clean stale socket file
-    try { fs.unlinkSync(this.opts.controlSocketPath); } catch {}
+  async start(): Promise<void> {
+    if (process.platform !== "win32") {
+      fs.mkdirSync(this.opts.sessionSocketDir, { recursive: true });
+    }
+    prepareEndpoint(this.opts.controlSocketPath);
 
     // Write PID file
     const pidData: PidFileData = {
@@ -108,7 +128,7 @@ export class SidecarServer {
     }
 
     // Clean up files
-    try { fs.unlinkSync(this.opts.controlSocketPath); } catch {}
+    cleanupEndpoint(this.opts.controlSocketPath);
     try { fs.unlinkSync(this.opts.pidFilePath); } catch {}
   }
 
@@ -219,7 +239,7 @@ export class SidecarServer {
       env.LANG = "en_US.UTF-8";
     }
 
-    const ptyProcess = pty.spawn(params.shell, [], {
+    const ptyProcess = pty.spawn(params.command, params.args, {
       name: "xterm-256color",
       cols: params.cols,
       rows: params.rows,
@@ -229,18 +249,25 @@ export class SidecarServer {
     });
 
     const ringBuffer = new RingBuffer(this.opts.ringBufferBytes);
-    const session: Session = {
+    const session = this.withOptional({
       id: sessionId,
       pty: ptyProcess,
-      shell: params.shell,
+      shell: params.command,
+      displayName: params.displayName,
+      target: params.target,
       cwd: params.cwd,
+      cwdHostPath: params.cwdHostPath,
+      cwdGuestPath: params.cwdGuestPath,
       createdAt: new Date().toISOString(),
       ringBuffer,
       dataServer: null!,
       dataClient: null,
       socketPath,
+      hasAttachedClient: false,
       reconnectQueue: null,
-    };
+    }, {
+      cwdGuestPath: params.cwdGuestPath,
+    }) as Session;
 
     // Listen for PTY output
     ptyProcess.onData((data: Buffer) => {
@@ -269,7 +296,7 @@ export class SidecarServer {
     });
 
     // Create per-session data socket server
-    try { fs.unlinkSync(socketPath); } catch {}
+    prepareEndpoint(socketPath);
     const dataServer = net.createServer((client) => {
       // Last-attach-wins: close previous client
       if (session.dataClient && !session.dataClient.destroyed) {
@@ -287,7 +314,13 @@ export class SidecarServer {
           client.write(queued);
         }
         session.reconnectQueue = null;
+      } else if (!session.hasAttachedClient) {
+        const snapshot = ringBuffer.snapshot();
+        if (snapshot.length > 0) {
+          client.write(snapshot);
+        }
       }
+      session.hasAttachedClient = true;
 
       // Pipe client input to PTY
       client.on("data", (data) => {
@@ -378,13 +411,18 @@ export class SidecarServer {
   private handleList(sock: net.Socket, id: number): void {
     const sessions: SessionInfo[] = [];
     for (const s of this.sessions.values()) {
-      sessions.push({
+      sessions.push(this.withOptional({
         sessionId: s.id,
         shell: s.shell,
+        displayName: s.displayName,
+        target: s.target,
         cwd: s.cwd,
+        cwdHostPath: s.cwdHostPath,
         pid: s.pty.pid,
         createdAt: s.createdAt,
-      });
+      }, {
+        cwdGuestPath: s.cwdGuestPath,
+      }) as SessionInfo);
     }
     sock.write(makeResponse(id, { sessions }));
   }
@@ -400,20 +438,10 @@ export class SidecarServer {
       return;
     }
     try {
-      const { execFileSync } = require("node:child_process");
-      const out = execFileSync(
-        "ps",
-        ["-o", "pid=,comm=", "-g", String(session.pty.pid)],
-        { encoding: "utf8", timeout: 2000 },
-      ).trim();
-      const lines = out.split("\n").filter(Boolean);
-      const last = lines[lines.length - 1]?.trim();
-      const command = last
-        ? last.replace(/^\d+\s+/, "")
-        : session.shell;
+      const command = this.getForegroundCommand(session);
       sock.write(makeResponse(id, { command }));
     } catch {
-      sock.write(makeResponse(id, { command: session.shell }));
+      sock.write(makeResponse(id, { command: session.displayName }));
     }
   }
 
@@ -444,7 +472,7 @@ export class SidecarServer {
       session.dataClient.destroy();
     }
     session.dataServer.close();
-    try { fs.unlinkSync(session.socketPath); } catch {}
+    cleanupEndpoint(session.socketPath);
     this.sessions.delete(sessionId);
     this.resetIdleTimer();
   }
@@ -457,7 +485,7 @@ export class SidecarServer {
       session.dataClient.destroy();
     }
     session.dataServer.close();
-    try { fs.unlinkSync(session.socketPath); } catch {}
+    cleanupEndpoint(session.socketPath);
     this.sessions.delete(sessionId);
     this.resetIdleTimer();
   }
@@ -481,6 +509,46 @@ export class SidecarServer {
   }
 
   private sessionSocketPath(sessionId: string): string {
-    return `${this.opts.sessionSocketDir}/${sessionId}.sock`;
+    return buildSessionSocketPath(sessionId);
+  }
+
+  private getForegroundCommand(session: Session): string {
+    if (process.platform === "win32") {
+      const fallback = session.target.startsWith("wsl:")
+        ? session.displayName
+        : displayCommandName(session.shell);
+      try {
+        const { execFileSync } = require("node:child_process");
+        const output = execFileSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-Command",
+            [
+              `$children = Get-CimInstance Win32_Process -Filter "ParentProcessId = ${session.pty.pid}" | Sort-Object ProcessId;`,
+              "if ($children.Count -gt 0) {",
+              "  $children[-1].Name",
+              "}",
+            ].join(" "),
+          ],
+          { encoding: "utf8", timeout: 2000, windowsHide: true },
+        ).trim();
+        return output ? displayCommandName(output) : fallback;
+      } catch {
+        return fallback;
+      }
+    }
+
+    const { execFileSync } = require("node:child_process");
+    const out = execFileSync(
+      "ps",
+      ["-o", "pid=,comm=", "-g", String(session.pty.pid)],
+      { encoding: "utf8", timeout: 2000 },
+    ).trim();
+    const lines = out.split("\n").filter(Boolean);
+    const last = lines[lines.length - 1]?.trim();
+    return last
+      ? displayCommandName(last.replace(/^\d+\s+/, ""))
+      : session.displayName;
   }
 }

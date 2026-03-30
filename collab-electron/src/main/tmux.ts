@@ -1,13 +1,18 @@
 import { execFileSync, execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import { COLLAB_DIR } from "./paths";
 
 export interface SessionMeta {
   shell: string;
   cwd: string;
   createdAt: string;
+  target?: string;
+  displayName?: string;
+  command?: string;
+  args?: string[];
+  cwdHostPath?: string;
+  cwdGuestPath?: string;
   backend?: "tmux" | "sidecar";
 }
 
@@ -32,31 +37,35 @@ function getApp(): typeof import("electron").app | null {
   }
 }
 
-export function getTmuxBin(): string {
+function packagedResourcePath(...segments: string[]): string | null {
   const app = getApp();
-  if (app?.isPackaged) {
-    return path.join(process.resourcesPath, "tmux");
-  }
-  return "tmux";
+  if (!app?.isPackaged) return null;
+  const candidate = path.join(process.resourcesPath, ...segments);
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+export function getTmuxBin(): string {
+  return packagedResourcePath("tmux") ?? "tmux";
 }
 
 
 export function getTmuxConf(): string {
-  const app = getApp();
-  if (app?.isPackaged) {
-    return path.join(process.resourcesPath, "tmux.conf");
+  const packaged = packagedResourcePath("tmux.conf");
+  if (packaged) {
+    return packaged;
   }
   // Dev mode: resolve from project root.
   // app.getAppPath() returns project root in electron-vite;
   // fall back to cwd for unit tests.
+  const app = getApp();
   const root = app?.getAppPath() ?? process.cwd();
   return path.join(root, "resources", "tmux.conf");
 }
 
 export function getTerminfoDir(): string | undefined {
-  const app = getApp();
-  if (app?.isPackaged) {
-    return path.join(process.resourcesPath, "terminfo");
+  const packaged = packagedResourcePath("terminfo");
+  if (packaged) {
+    return packaged;
   }
   return undefined;
 }
@@ -81,7 +90,7 @@ export function tmuxExec(...args: string[]): string {
     if (isEnoent(err)) {
       const app = getApp();
       const hint = app?.isPackaged
-        ? "Bundled tmux binary is missing from resources."
+        ? "tmux is required for legacy session recovery in packaged builds. Install it and ensure it is on your PATH."
         : "tmux is required for dev mode. Install it with: brew install tmux";
       throw new Error(hint);
     }

@@ -6,6 +6,12 @@ import {
 	useRef,
 } from 'react';
 import type { TreeNode } from '@collab/shared/types';
+import {
+	isSubpath,
+	joinPath,
+	parentPath,
+	splitPathSegments,
+} from '@collab/shared/path-utils';
 import type { SortMode } from './types';
 
 export interface FlatItem {
@@ -188,7 +194,7 @@ export function useFileTree(
 						}): TreeNode => {
 							const node: TreeNode = {
 								name: e.name,
-								path: `${dirPath}/${e.name}`,
+								path: joinPath(dirPath, e.name),
 								kind: e.isDirectory
 									? 'folder'
 									: 'file',
@@ -283,13 +289,9 @@ export function useFileTree(
 				} else {
 					let parent = dirPath;
 					while (true) {
-						const slash =
-							parent.lastIndexOf('/');
-						if (slash <= 0) break;
-						parent = parent.substring(
-							0,
-							slash,
-						);
+						const nextParent = parentPath(parent);
+						if (nextParent === parent) break;
+						parent = nextParent;
 						if (
 							dirContentsRef.current.has(
 								parent,
@@ -332,8 +334,7 @@ export function useFileTree(
 				for (const [k, v] of prev) {
 					for (const root of roots) {
 						if (
-							k === root ||
-							k.startsWith(`${root}/`)
+							isSubpath(root, k)
 						) {
 							next.set(k, v);
 						}
@@ -352,10 +353,7 @@ export function useFileTree(
 						for (const p of stored as string[]) {
 							for (const root of roots) {
 								if (
-									p === root ||
-									p.startsWith(
-										`${root}/`,
-									)
+									isSubpath(root, p)
 								) {
 									valid.add(p);
 								}
@@ -432,7 +430,7 @@ export function useFileTree(
 						for (const p of prev) {
 							if (
 								p === path ||
-								p.startsWith(path + '/')
+								isSubpath(path, p)
 							) {
 								next.delete(p);
 							}
@@ -514,22 +512,18 @@ export function useFileTree(
 		(filePath: string) => {
 			const roots = folders.map((f) => f.path);
 			const root = roots.find(
-				(r) =>
-					filePath === r ||
-					filePath.startsWith(r + '/'),
+				(r) => isSubpath(r, filePath),
 			);
 			if (!root) return;
 
-			const relative = filePath.slice(
-				root.length + 1,
-			);
-			const parts = relative.split('/');
+			const relative = filePath.slice(root.length + 1);
+			const parts = splitPathSegments(relative);
 			parts.pop();
 
 			const toExpand: string[] = [root];
 			let current = root;
 			for (const part of parts) {
-				current = `${current}/${part}`;
+				current = joinPath(current, part);
 				toExpand.push(current);
 			}
 

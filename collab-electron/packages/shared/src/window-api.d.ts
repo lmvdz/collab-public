@@ -66,6 +66,18 @@ interface Backlink {
 interface PtySession {
   sessionId: string;
   shell: string;
+  displayName: string;
+  target: string;
+  command: string;
+  args: string[];
+  cwdHostPath: string;
+  cwdGuestPath?: string;
+}
+
+interface TerminalTargetOption {
+  id: string;
+  label: string;
+  isDefault?: boolean;
 }
 
 type PtyDataCb = (
@@ -102,10 +114,12 @@ type AgentEvent =
 
 export interface CollabApi {
   // Config
+  getPlatform: () => NodeJS.Platform;
   getConfig: () => Promise<AppConfig>;
   getDeviceId: () => Promise<string>;
   getPref: (key: string) => Promise<unknown>;
   setPref: (key: string, value: unknown) => Promise<void>;
+  listTerminalTargets: () => Promise<TerminalTargetOption[]>;
   getWorkspacePref: (key: string) => Promise<unknown>;
   setWorkspacePref: (
     key: string,
@@ -201,7 +215,12 @@ export interface CollabApi {
   ) => Promise<Backlink[]>;
 
   // PTY
-  ptyCreate: (cwd?: string, cols?: number, rows?: number) => Promise<PtySession>;
+  ptyCreate: (
+    cwd?: string,
+    cols?: number,
+    rows?: number,
+    target?: string,
+  ) => Promise<PtySession>;
   ptyWrite: (
     sessionId: string,
     data: string,
@@ -220,25 +239,34 @@ export interface CollabApi {
     sessionId: string,
     cols: number,
     rows: number,
-  ) => Promise<PtySession & { scrollback: string }>;
+  ) => Promise<PtySession & { scrollback: string; mode: "tmux" | "sidecar" }>;
   ptyDiscover: () => Promise<
     Array<{
       sessionId: string;
-      meta: { shell: string; cwd: string; createdAt: string };
+      meta: {
+        shell: string;
+        cwd: string;
+        createdAt: string;
+        displayName?: string;
+        target?: string;
+        cwdHostPath?: string;
+        cwdGuestPath?: string;
+      };
     }>
   >;
   ptyReadMeta: (sessionId: string) => Promise<{
     shell: string;
     cwd: string;
     createdAt: string;
+    target?: string;
     backend?: "tmux" | "sidecar";
   } | null>;
   ptyCleanDetached: (activeSessionIds: string[]) => Promise<void>;
   notifyPtySessionId: (sessionId: string) => void;
-  onPtyData: (cb: PtyDataCb) => void;
-  offPtyData: (cb: PtyDataCb) => void;
-  onPtyExit: (cb: PtyExitCb) => void;
-  offPtyExit: (cb: PtyExitCb) => void;
+  onPtyData: (sessionId: string, cb: PtyDataCb) => void;
+  offPtyData: (sessionId: string, cb: PtyDataCb) => void;
+  onPtyExit: (sessionId: string, cb: PtyExitCb) => void;
+  offPtyExit: (sessionId: string, cb: PtyExitCb) => void;
   onCdTo: (cb: CdToCb) => void;
   offCdTo: (cb: CdToCb) => void;
 

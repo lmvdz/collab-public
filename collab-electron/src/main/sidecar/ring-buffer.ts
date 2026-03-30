@@ -17,13 +17,14 @@ export class RingBuffer {
     return this.total;
   }
 
-  write(data: Buffer): void {
-    const len = data.length;
+  write(data: Uint8Array): void {
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const len = chunk.length;
     this.total += len;
 
     if (len >= this.capacity) {
       // Data larger than buffer — keep only the tail
-      data.copy(this.buf, 0, len - this.capacity, len);
+      chunk.copy(this.buf, 0, len - this.capacity, len);
       this.head = 0;
       this.filled = this.capacity;
       return;
@@ -32,10 +33,10 @@ export class RingBuffer {
     const spaceToEnd = this.capacity - this.head;
 
     if (len <= spaceToEnd) {
-      data.copy(this.buf, this.head);
+      chunk.copy(this.buf, this.head);
     } else {
-      data.copy(this.buf, this.head, 0, spaceToEnd);
-      data.copy(this.buf, 0, spaceToEnd);
+      chunk.copy(this.buf, this.head, 0, spaceToEnd);
+      chunk.copy(this.buf, 0, spaceToEnd);
     }
 
     this.head = (this.head + len) % this.capacity;

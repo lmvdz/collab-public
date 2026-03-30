@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
+import { isSubpath } from "@collab/shared/path-utils";
 import { type FileFilter, isImageFile } from "./file-filter";
 
 export interface DirEntry {
@@ -35,7 +36,7 @@ export function shouldIncludeEntry(
     return true;
   }
 
-  if (dirPath !== rootPath && !dirPath.startsWith(rootPath + "/")) {
+  if (!isSubpath(rootPath, dirPath)) {
     return true;
   }
 

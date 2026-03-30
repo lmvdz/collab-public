@@ -15,9 +15,19 @@ type PtyExitCallback = (
 ) => void;
 type CdToCallback = (path: string) => void;
 
-const dataListeners = new Set<PtyDataCallback>();
-const exitListeners = new Set<PtyExitCallback>();
+const dataListeners = new Map<string, Set<PtyDataCallback>>();
+const exitListeners = new Map<string, Set<PtyExitCallback>>();
 type RunInTerminalCb = (command: string) => void;
+
+const MAX_BUFFERED_PTY_EVENTS = 32;
+const bufferedPtyData = new Map<
+  string,
+  Array<{ sessionId: string; data: Uint8Array }>
+>();
+const bufferedPtyExit = new Map<
+  string,
+  { sessionId: string; exitCode: number }
+>();
 
 const cdToListeners = new Set<CdToCallback>();
 const runInTerminalListeners = new Set<RunInTerminalCb>();
@@ -39,12 +49,49 @@ const focusTabListeners = new Set<FocusTabCb>();
 type ShellBlurCb = () => void;
 const shellBlurListeners = new Set<ShellBlurCb>();
 
+function getOrCreateListenerSet<T>(
+  map: Map<string, Set<T>>,
+  sessionId: string,
+): Set<T> {
+  let listeners = map.get(sessionId);
+  if (!listeners) {
+    listeners = new Set<T>();
+    map.set(sessionId, listeners);
+  }
+  return listeners;
+}
+
+function removeListener<T>(
+  map: Map<string, Set<T>>,
+  sessionId: string,
+  cb: T,
+): void {
+  const listeners = map.get(sessionId);
+  if (!listeners) return;
+  listeners.delete(cb);
+  if (listeners.size === 0) {
+    map.delete(sessionId);
+  }
+}
+
 ipcRenderer.on("pty:data", (_event, payload) => {
-  for (const cb of dataListeners) cb(payload);
+  if ((dataListeners.get(payload.sessionId)?.size ?? 0) === 0) {
+    const sessionBuffer = bufferedPtyData.get(payload.sessionId) ?? [];
+    sessionBuffer.push(payload);
+    if (sessionBuffer.length > MAX_BUFFERED_PTY_EVENTS) {
+      sessionBuffer.shift();
+    }
+    bufferedPtyData.set(payload.sessionId, sessionBuffer);
+  }
+
+  for (const cb of dataListeners.get(payload.sessionId) ?? []) cb(payload);
 });
 
 ipcRenderer.on("pty:exit", (_event, payload) => {
-  for (const cb of exitListeners) cb(payload);
+  if ((exitListeners.get(payload.sessionId)?.size ?? 0) === 0) {
+    bufferedPtyExit.set(payload.sessionId, payload);
+  }
+  for (const cb of exitListeners.get(payload.sessionId) ?? []) cb(payload);
 });
 
 ipcRenderer.on("cd-to", (_event, path: string) => {
@@ -111,6 +158,7 @@ ipcRenderer.on("nav-visibility", navVisBuffer);
 
 contextBridge.exposeInMainWorld("api", {
   // Shared
+  getPlatform: (): NodeJS.Platform => process.platform,
   getConfig: () => ipcRenderer.invoke("config:get"),
   getAppVersion: () => ipcRenderer.invoke("app:version"),
   getDeviceId: () =>
@@ -118,6 +166,8 @@ contextBridge.exposeInMainWorld("api", {
   getPref: (key: string) => ipcRenderer.invoke("pref:get", key),
   setPref: (key: string, value: unknown) =>
     ipcRenderer.invoke("pref:set", key, value),
+  listTerminalTargets: () =>
+    ipcRenderer.invoke("terminal:list-targets"),
   getWorkspacePref: (key: string) =>
     ipcRenderer.invoke("workspace-pref:get", key),
   setWorkspacePref: (key: string, value: unknown) =>
@@ -208,10 +258,15 @@ contextBridge.exposeInMainWorld("api", {
   readTree: (params: { root: string }) =>
     ipcRenderer.invoke("workspace:read-tree", params),
   // Terminal (PTY)
-  ptyCreate: (cwd?: string, cols?: number, rows?: number) =>
+  ptyCreate: (
+    cwd?: string,
+    cols?: number,
+    rows?: number,
+    target?: string,
+  ) =>
     ipcRenderer.invoke(
       "pty:create",
-      { cwd, cols, rows },
+      { cwd, cols, rows, target },
     ),
   ptyWrite: (sessionId: string, data: string) =>
     ipcRenderer.invoke("pty:write", { sessionId, data }),
@@ -243,17 +298,27 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.invoke("pty:read-meta", sessionId),
   ptyCleanDetached: (activeSessionIds: string[]) =>
     ipcRenderer.invoke("pty:clean-detached", activeSessionIds),
-  onPtyData: (cb: PtyDataCallback) => {
-    dataListeners.add(cb);
+  onPtyData: (sessionId: string, cb: PtyDataCallback) => {
+    getOrCreateListenerSet(dataListeners, sessionId).add(cb);
+    const buffered = bufferedPtyData.get(sessionId);
+    if (buffered && buffered.length > 0) {
+      for (const payload of buffered) cb(payload);
+      bufferedPtyData.delete(sessionId);
+    }
   },
-  offPtyData: (cb: PtyDataCallback) => {
-    dataListeners.delete(cb);
+  offPtyData: (sessionId: string, cb: PtyDataCallback) => {
+    removeListener(dataListeners, sessionId, cb);
   },
-  onPtyExit: (cb: PtyExitCallback) => {
-    exitListeners.add(cb);
+  onPtyExit: (sessionId: string, cb: PtyExitCallback) => {
+    getOrCreateListenerSet(exitListeners, sessionId).add(cb);
+    const buffered = bufferedPtyExit.get(sessionId);
+    if (buffered) {
+      cb(buffered);
+      bufferedPtyExit.delete(sessionId);
+    }
   },
-  offPtyExit: (cb: PtyExitCallback) => {
-    exitListeners.delete(cb);
+  offPtyExit: (sessionId: string, cb: PtyExitCallback) => {
+    removeListener(exitListeners, sessionId, cb);
   },
   notifyPtySessionId: (sessionId: string) =>
     ipcRenderer.sendToHost("pty-session-id", sessionId),

@@ -7,6 +7,7 @@ import {
 import {
 	createTileDOM, positionTile, updateTileTitle, getTileLabel,
 } from "./tile-renderer.js";
+import { workspaceRootMatch } from "@collab/shared/path-utils";
 import { attachDrag, attachResize } from "./tile-interactions.js";
 import { findAutoPlacement } from "./canvas-rpc.js";
 
@@ -122,6 +123,13 @@ export function createTileManager({
 	}
 
 	function forwardClickToWebview(webview, mouseEvent) {
+		if (!webview.isConnected) return;
+		if (
+			typeof webview.isLoading === "function" &&
+			webview.isLoading()
+		) {
+			return;
+		}
 		const rect = webview.getBoundingClientRect();
 		if (rect.width === 0 || rect.height === 0) return;
 		const x = Math.round(
@@ -667,8 +675,7 @@ export function createTileManager({
 			}
 			if (
 				t.type === "graph" && t.folderPath &&
-				(t.folderPath === oldPath ||
-					t.folderPath.startsWith(oldPath + "/"))
+				workspaceRootMatch(oldPath, t.folderPath)
 			) {
 				t.folderPath =
 					newPath + t.folderPath.slice(oldPath.length);

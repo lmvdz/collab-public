@@ -17,10 +17,30 @@ import { SIDECAR_VERSION } from "./protocol";
 
 // Short temp dir to stay under macOS 104-byte sun_path limit
 const TEST_DIR = path.join(os.tmpdir(), `cc-${process.pid}`);
-const CONTROL_SOCK = path.join(TEST_DIR, "ctrl.sock");
+const CONTROL_SOCK = process.platform === "win32"
+  ? `\\\\.\\pipe\\cc-${process.pid}-ctrl`
+  : path.join(TEST_DIR, "ctrl.sock");
 const SESSION_DIR = path.join(TEST_DIR, "s");
 const PID_PATH = path.join(TEST_DIR, "pid");
 const TOKEN = "client-test-token";
+const TEST_CWD = process.platform === "win32" ? os.tmpdir() : "/tmp";
+const TEST_SHELL = process.platform === "win32"
+  ? {
+    command: "powershell.exe",
+    args: ["-NoLogo"],
+    displayName: "PowerShell",
+    target: "powershell",
+    echo: (marker: string) => `Write-Output '${marker}'\n`,
+    exit: "exit\n",
+  }
+  : {
+    command: "/bin/sh",
+    args: [],
+    displayName: "sh",
+    target: "shell",
+    echo: (marker: string) => `echo ${marker}\n`,
+    exit: "exit\n",
+  };
 
 let server: SidecarServer | null = null;
 let client: SidecarClient | null = null;
@@ -70,8 +90,12 @@ describe("SidecarClient", () => {
     await client.connect();
 
     const { sessionId, socketPath } = await client.createSession({
-      shell: "/bin/sh",
-      cwd: "/tmp",
+      command: TEST_SHELL.command,
+      args: TEST_SHELL.args,
+      displayName: TEST_SHELL.displayName,
+      target: TEST_SHELL.target,
+      cwdHostPath: TEST_CWD,
+      cwd: TEST_CWD,
       cols: 80,
       rows: 24,
     });
@@ -83,7 +107,7 @@ describe("SidecarClient", () => {
       (data) => chunks.push(data),
     );
 
-    dataSock.write("echo client-test\n");
+    dataSock.write(TEST_SHELL.echo("client-test"));
 
     // Wait until we see the expected output or timeout
     const deadline = Date.now() + 5000;
@@ -104,8 +128,12 @@ describe("SidecarClient", () => {
     await client.connect();
 
     await client.createSession({
-      shell: "/bin/sh",
-      cwd: "/tmp",
+      command: TEST_SHELL.command,
+      args: TEST_SHELL.args,
+      displayName: TEST_SHELL.displayName,
+      target: TEST_SHELL.target,
+      cwdHostPath: TEST_CWD,
+      cwd: TEST_CWD,
       cols: 80,
       rows: 24,
     });
@@ -120,8 +148,12 @@ describe("SidecarClient", () => {
     await client.connect();
 
     const { sessionId } = await client.createSession({
-      shell: "/bin/sh",
-      cwd: "/tmp",
+      command: TEST_SHELL.command,
+      args: TEST_SHELL.args,
+      displayName: TEST_SHELL.displayName,
+      target: TEST_SHELL.target,
+      cwdHostPath: TEST_CWD,
+      cwd: TEST_CWD,
       cols: 80,
       rows: 24,
     });
@@ -185,7 +217,9 @@ describe("SidecarClient", () => {
 
   it("malformed JSON from server does not crash", async () => {
     // Create a fake server that sends garbage over the control socket
-    const fakeSockPath = path.join(TEST_DIR, "fake.sock");
+    const fakeSockPath = process.platform === "win32"
+      ? `\\\\.\\pipe\\cc-${process.pid}-fake`
+      : path.join(TEST_DIR, "fake.sock");
     fs.mkdirSync(TEST_DIR, { recursive: true });
 
     const fakeServer = net.createServer((conn) => {
@@ -243,8 +277,12 @@ describe("SidecarClient", () => {
     await client.connect();
 
     const { sessionId, socketPath } = await client.createSession({
-      shell: "/bin/sh",
-      cwd: "/tmp",
+      command: TEST_SHELL.command,
+      args: TEST_SHELL.args,
+      displayName: TEST_SHELL.displayName,
+      target: TEST_SHELL.target,
+      cwdHostPath: TEST_CWD,
+      cwd: TEST_CWD,
       cols: 80,
       rows: 24,
     });
@@ -255,7 +293,7 @@ describe("SidecarClient", () => {
       socketPath,
       (data) => chunks1.push(data),
     );
-    dataSock1.write("echo RECONNECT_MARKER\n");
+    dataSock1.write(TEST_SHELL.echo("RECONNECT_MARKER"));
 
     const deadline1 = Date.now() + 5000;
     while (
@@ -304,8 +342,12 @@ describe("SidecarClient", () => {
     await client.connect();
 
     const { sessionId, socketPath } = await client.createSession({
-      shell: "/bin/sh",
-      cwd: "/tmp",
+      command: TEST_SHELL.command,
+      args: TEST_SHELL.args,
+      displayName: TEST_SHELL.displayName,
+      target: TEST_SHELL.target,
+      cwdHostPath: TEST_CWD,
+      cwd: TEST_CWD,
       cols: 80,
       rows: 24,
     });
@@ -321,7 +363,7 @@ describe("SidecarClient", () => {
       socketPath,
       () => {},
     );
-    dataSock.write("exit\n");
+    dataSock.write(TEST_SHELL.exit);
 
     // Wait for the notification
     const deadline = Date.now() + 5000;

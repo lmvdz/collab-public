@@ -4,7 +4,7 @@ const ZOOM_RUBBER_BAND_K = 400;
 const CELL = 20;
 const MAJOR = 80;
 
-const isMac = typeof navigator !== "undefined" && navigator.platform.startsWith("Mac");
+const isMac = window.shellApi.getPlatform() === "darwin";
 
 export function shouldZoom(e, mac = isMac) {
 	return e.ctrlKey || (mac && e.metaKey);

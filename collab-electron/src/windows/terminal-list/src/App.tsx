@@ -1,22 +1,46 @@
 import { useEffect, useState } from "react";
+import { normalizeCommandName } from "@collab/shared/path-utils";
 import "./App.css";
 
 interface TerminalEntry {
   sessionId: string;
-  shell: string;
+  displayName: string;
+  commandName: string;
   cwd: string;
   foreground: string | null;
   tileId: string;
 }
 
-function shellBasename(shell: string): string {
-  return shell.split("/").pop() || shell;
-}
-
 function isIdle(entry: TerminalEntry): boolean {
   if (!entry.foreground) return true;
-  const base = shellBasename(entry.shell);
-  return entry.foreground === base;
+  const foreground = normalizeCommandName(entry.foreground);
+  if (foreground === entry.commandName) return true;
+  if (
+    entry.commandName === "wsl" &&
+    foreground === normalizeCommandName(entry.displayName)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isTerminalEntry(value: unknown): value is TerminalEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  return typeof entry.sessionId === "string"
+    && typeof entry.displayName === "string"
+    && typeof entry.commandName === "string"
+    && typeof entry.cwd === "string"
+    && typeof entry.tileId === "string"
+    && (entry.foreground === null || typeof entry.foreground === "string");
+}
+
+function dedupeEntries(entries: TerminalEntry[]): TerminalEntry[] {
+  const byTileId = new Map<string, TerminalEntry>();
+  for (const entry of entries) {
+    byTileId.set(entry.tileId, entry);
+  }
+  return [...byTileId.values()];
 }
 
 function App() {
@@ -30,11 +54,16 @@ function App() {
     const cleanup = window.api.onTerminalListMessage(
       (channel: string, ...args: unknown[]) => {
         if (channel === "terminal-list:init") {
-          const sessions = args[0] as TerminalEntry[];
-          setEntries(sessions);
+          const sessions = Array.isArray(args[0])
+            ? args[0].filter(isTerminalEntry)
+            : [];
+          setEntries(dedupeEntries(sessions));
         } else if (channel === "terminal-list:add") {
-          const entry = args[0] as TerminalEntry;
-          setEntries((prev) => [...prev, entry]);
+          const entry = args[0];
+          if (!isTerminalEntry(entry)) return;
+          setEntries((prev) =>
+            dedupeEntries([...prev.filter((e) => e.tileId !== entry.tileId), entry])
+          );
         } else if (channel === "terminal-list:remove") {
           const sessionId = args[0] as string;
           setEntries((prev) =>
@@ -112,7 +141,7 @@ function App() {
 
         return (
           <div
-            key={entry.sessionId}
+            key={entry.tileId}
             className={classes}
             onClick={() => peekTile(entry.sessionId)}
           >
@@ -120,7 +149,7 @@ function App() {
             <div className="entry-info">
               <div className="entry-top">
                 <span className="shell-name">
-                  {shellBasename(entry.shell)}
+                  {entry.displayName}
                 </span>
                 <span className="status-label">
                   {idle

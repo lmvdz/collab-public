@@ -21,6 +21,15 @@ import {
 import { SourcesFeed } from '@collab/components/SourcesFeed';
 import '@collab/components/SourcesFeed/SourcesFeed.css';
 import type { AppConfig } from '@collab/shared/types';
+import { displayBasename, parentPath } from '@collab/shared/path-utils';
+
+const PLATFORM = window.api.getPlatform();
+
+const REVEAL_LABEL = PLATFORM === 'darwin'
+	? 'Reveal in Finder'
+	: PLATFORM === 'win32'
+		? 'Reveal in Explorer'
+		: 'Reveal in File Manager';
 
 function ImportWebArticleModal({
 	folderPath,
@@ -174,9 +183,7 @@ export default function App() {
 				? [
 						{
 							path: workspacePath,
-							name:
-								workspacePath.split('/').pop() ??
-								workspacePath,
+							name: displayBasename(workspacePath),
 						},
 					]
 				: [],
@@ -558,7 +565,7 @@ export default function App() {
 					},
 					{
 						id: 'reveal-in-finder',
-						label: 'Reveal in Finder',
+						label: REVEAL_LABEL,
 					},
 					{
 						id: 'terminal',
@@ -576,7 +583,7 @@ export default function App() {
 					},
 					{
 						id: 'reveal-in-finder',
-						label: 'Reveal in Finder',
+						label: REVEAL_LABEL,
 					},
 					{
 						id: 'terminal',
@@ -595,10 +602,7 @@ export default function App() {
 				? workspacePath
 				: item.kind === 'folder'
 					? item.path
-					: item.path.substring(
-							0,
-							item.path.lastIndexOf('/'),
-						);
+					: parentPath(item.path);
 
 			switch (action) {
 				case 'new-file':
@@ -662,12 +666,7 @@ export default function App() {
 						window.api.openInTerminal(
 							item.kind === 'folder'
 								? item.path
-								: item.path.substring(
-										0,
-										item.path.lastIndexOf(
-											'/',
-										),
-									),
+								: parentPath(item.path),
 						);
 					break;
 			}

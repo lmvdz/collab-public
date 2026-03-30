@@ -18,6 +18,12 @@ export interface AppConfig {
   ui: Record<string, unknown>;
 }
 
+export type TerminalTarget =
+  | "auto"
+  | "powershell"
+  | "shell"
+  | `wsl:${string}`;
+
 const DEFAULT_CONFIG: AppConfig = {
   workspaces: [],
   active_workspace: -1,
@@ -33,6 +39,17 @@ export function loadConfig(): AppConfig {
   try {
     const raw = readFileSync(configPath(), "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const ui =
+      parsed.ui && typeof parsed.ui === "object"
+        ? { ...(parsed.ui as Record<string, unknown>) }
+        : {};
+
+    if ("terminalMode" in ui) {
+      delete ui.terminalMode;
+    }
+    if (!isTerminalTarget(ui.terminalTarget)) {
+      ui.terminalTarget = "auto";
+    }
 
     let workspaces: string[];
     let activeWorkspace: number;
@@ -63,13 +80,13 @@ export function loadConfig(): AppConfig {
       workspaces,
       active_workspace: activeWorkspace,
       window_state: (parsed.window_state as WindowState) ?? null,
-      ui:
-        parsed.ui && typeof parsed.ui === "object"
-          ? (parsed.ui as Record<string, unknown>)
-          : {},
+      ui,
     };
   } catch {
-    return { ...DEFAULT_CONFIG, ui: {} };
+    return {
+      ...DEFAULT_CONFIG,
+      ui: { terminalTarget: "auto" },
+    };
   }
 }
 
@@ -98,10 +115,18 @@ export function setPref(
 export type TerminalMode = "tmux" | "sidecar";
 
 export function getTerminalMode(): TerminalMode {
-  const config = loadConfig();
-  const mode = getPref(config, "terminalMode");
-  if (mode === "sidecar" || mode === "tmux") {
-    return mode;
-  }
   return "sidecar";
+}
+
+export function isTerminalTarget(value: unknown): value is TerminalTarget {
+  return value === "auto"
+    || value === "powershell"
+    || value === "shell"
+    || (typeof value === "string" && value.startsWith("wsl:"));
+}
+
+export function getTerminalTarget(): TerminalTarget {
+  const config = loadConfig();
+  const target = getPref(config, "terminalTarget");
+  return isTerminalTarget(target) ? target : "auto";
 }

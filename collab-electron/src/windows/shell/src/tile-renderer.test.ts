@@ -41,7 +41,23 @@ describe("splitFilepath", () => {
 // -- getTileLabel --
 
 describe("getTileLabel", () => {
-  test("returns 'Terminal' for term tiles", () => {
+  test("returns cwd basename for term tiles with cwd", () => {
+    const label = getTileLabel({
+      type: "term", id: "t1", cwd: "/Users/me/projects/collab",
+    });
+    expect(label.name).toBe("collab");
+    expect(label.parent).toBe("/Users/me/projects/");
+  });
+
+  test("returns display name for term tiles without cwd", () => {
+    const label = getTileLabel({
+      type: "term", id: "t1", displayName: "PowerShell",
+    });
+    expect(label.name).toBe("PowerShell");
+    expect(label.parent).toBe("");
+  });
+
+  test("returns 'Terminal' for term tiles without session info", () => {
     const label = getTileLabel({ type: "term", id: "t1" });
     expect(label.name).toBe("Terminal");
     expect(label.parent).toBe("");

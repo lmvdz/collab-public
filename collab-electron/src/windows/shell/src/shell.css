@@ -60,6 +60,11 @@ body {
 	background: transparent;
 }
 
+html.platform-win,
+body.platform-win {
+	background: transparent;
+}
+
 /* ── Titlebar ── */
 
 #titlebar {
@@ -121,6 +126,10 @@ body {
 	background: rgba(var(--bg-rgb), calc(1 - (1 - var(--canvas-opacity)) / 2));
 }
 
+.platform-win #panel-nav {
+	background: rgba(var(--bg-rgb), calc(1 - (1 - var(--canvas-opacity)) / 2));
+}
+
 #panel-nav::after {
 	content: '';
 	position: absolute;
@@ -159,6 +168,10 @@ body {
 	outline: none;
 }
 
+.platform-win #panel-viewer {
+	background: rgba(var(--canvas-bg-rgb), var(--canvas-opacity));
+}
+
 #grid-canvas {
 	position: absolute;
 	inset: 0;
@@ -180,6 +193,10 @@ body {
 	overflow: hidden;
 	min-height: 0;
 	border-left: 1px solid var(--border);
+	background: rgba(var(--bg-rgb), calc(1 - (1 - var(--canvas-opacity)) / 2));
+}
+
+.platform-win #panel-terminal {
 	background: rgba(var(--bg-rgb), calc(1 - (1 - var(--canvas-opacity)) / 2));
 }
 

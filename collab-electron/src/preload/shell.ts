@@ -36,6 +36,8 @@ ipcRenderer.on("shell:forward", (_event, target, channel, ...args) => {
 });
 
 contextBridge.exposeInMainWorld("shellApi", {
+  getPlatform: (): NodeJS.Platform => process.platform,
+
   getViewConfig: (): Promise<AllViewConfigs> =>
     ipcRenderer.invoke("shell:get-view-config"),
 

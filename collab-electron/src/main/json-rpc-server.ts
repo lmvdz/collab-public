@@ -1,6 +1,5 @@
 import { createServer, type Server, type Socket } from "node:net";
 import {
-  existsSync,
   mkdirSync,
   unlinkSync,
   writeFileSync,
@@ -8,8 +7,13 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { COLLAB_DIR } from "./paths";
+import {
+  cleanupEndpoint,
+  makeEndpointPath,
+  prepareEndpoint,
+} from "./ipc-endpoint";
 
-const SOCKET_PATH = join(COLLAB_DIR, "ipc.sock");
+const SOCKET_PATH = makeEndpointPath("ipc");
 // Write the breadcrumb to the base directory (~/.collaborator/)
 // so the hook script can discover the socket regardless of
 // whether the app is running in dev or prod mode.
@@ -142,14 +146,16 @@ function handleConnection(socket: Socket): void {
   });
 }
 
-function cleanupStaleSocket(): void {
-  if (existsSync(SOCKET_PATH)) {
-    try {
-      unlinkSync(SOCKET_PATH);
-    } catch {
-      // Socket file already gone
-    }
-  }
+function makeMethodEntry(
+  handler: MethodHandler,
+  description: string,
+  params?: Record<string, string>,
+): MethodEntry {
+  return {
+    handler,
+    description,
+    ...(params ? { params } : {}),
+  };
 }
 
 export function registerMethod(
@@ -157,17 +163,20 @@ export function registerMethod(
   handler: MethodHandler,
   meta?: { description?: string; params?: Record<string, string> },
 ): void {
-  methods.set(method, {
-    handler,
-    description: meta?.description ?? "",
-    params: meta?.params,
-  });
+  methods.set(
+    method,
+    makeMethodEntry(
+      handler,
+      meta?.description ?? "",
+      meta?.params,
+    ),
+  );
 }
 
 export function startJsonRpcServer(): Promise<void> {
   return new Promise((resolve, reject) => {
-    mkdirSync(COLLAB_DIR, { recursive: true });
-    cleanupStaleSocket();
+    prepareEndpoint(SOCKET_PATH);
+    mkdirSync(BASE_DIR, { recursive: true });
 
     server = createServer(handleConnection);
 
@@ -203,7 +212,7 @@ export function stopJsonRpcServer(): void {
     server = null;
   }
 
-  cleanupStaleSocket();
+  cleanupEndpoint(SOCKET_PATH);
 
   try {
     unlinkSync(SOCKET_PATH_FILE);

@@ -54,8 +54,8 @@ export function createViewport(canvasEl, gridCanvas) {
 		const dotOffY = ((state.panY % step) + step) % step;
 		const dotSize = Math.max(1, 1.5 * state.zoom);
 		gridCtx.fillStyle = dark
-			? "rgba(255,255,255,0.22)"
-			: "rgba(0,0,0,0.20)";
+			? "rgba(255,255,255,0.15)"
+			: "rgba(0,0,0,0.25)";
 		for (let x = dotOffX; x <= w; x += step) {
 			for (let y = dotOffY; y <= h; y += step) {
 				const px = Math.round(x);
@@ -66,8 +66,8 @@ export function createViewport(canvasEl, gridCanvas) {
 
 		const majorDotSize = Math.max(1, 1.5 * state.zoom);
 		gridCtx.fillStyle = dark
-			? "rgba(255,255,255,0.40)"
-			: "rgba(0,0,0,0.35)";
+			? "rgba(255,255,255,0.25)"
+			: "rgba(0,0,0,0.40)";
 		for (let x = offX; x <= w; x += majorStep) {
 			for (let y = offY; y <= h; y += majorStep) {
 				const px = Math.round(x);

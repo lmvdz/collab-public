@@ -57,9 +57,9 @@ export function getTmuxConf(): string {
   }
   // Dev mode: resolve from project root.
   // app.getAppPath() returns project root in electron-vite;
-  // fall back to cwd for unit tests.
+  // fall back to the source/output tree so tests don't depend on cwd.
   const app = getApp();
-  const root = app?.getAppPath() ?? process.cwd();
+  const root = app?.getAppPath() ?? path.resolve(__dirname, "..", "..");
   return path.join(root, "resources", "tmux.conf");
 }
 

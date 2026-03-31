@@ -140,3 +140,11 @@ export function getTerminalTarget(): TerminalTarget {
   const target = getPref(config, "terminalTarget");
   return isTerminalTarget(target) ? target : "auto";
 }
+
+export function getInProcessTerminals(): boolean {
+  const config = loadConfig();
+  const pref = getPref(config, "inProcessTerminals");
+  if (pref === true || pref === false) return pref;
+  // Default: true on Windows, false on macOS (until validated)
+  return process.platform === "win32";
+}

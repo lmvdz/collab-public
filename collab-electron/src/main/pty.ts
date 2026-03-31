@@ -23,6 +23,7 @@ import {
   getTerminalBackend,
   getTerminalMode,
   getTerminalTarget,
+  getInProcessTerminals,
   type TerminalBackend,
   type TerminalMode,
   type TerminalTarget,
@@ -69,6 +70,28 @@ const dataSockets = new Map<string, net.Socket>();
  * touch the `sessions` Map (which holds IPty objects).
  */
 const sidecarSessionIds = new Set<string>();
+
+/**
+ * When in-process terminal mode is active, PTY data is routed to the
+ * shell BrowserWindow instead of per-terminal webviews.
+ */
+let shellWebContentsId: number | null = null;
+
+export function registerShellWebContents(id: number): void {
+  shellWebContentsId = id;
+}
+
+/**
+ * Return the webContents id that should receive PTY data/exit events.
+ * When in-process terminals are enabled and the shell window is registered,
+ * route to the shell window; otherwise use the original sender.
+ */
+function getEffectiveSender(senderWebContentsId?: number): number | undefined {
+  if (getInProcessTerminals() && shellWebContentsId != null) {
+    return shellWebContentsId;
+  }
+  return senderWebContentsId;
+}
 
 function getSidecarClient(): SidecarClient {
   if (!sidecarClient) throw new Error("Sidecar client not initialized");
@@ -426,6 +449,7 @@ function attachClient(
   senderWebContentsId?: number,
   target?: TerminalTarget,
 ): pty.IPty {
+  const effectiveSender = getEffectiveSender(senderWebContentsId);
   const name = tmuxSessionName(sessionId);
   const spec = getTmuxSpawnSpec(target, "attach-session", "-t", name);
   const options: pty.IPtyForkOptions = {
@@ -448,7 +472,7 @@ function attachClient(
   disposables.push(
     ptyProcess.onData((data: string) => {
       sendToSender(
-        senderWebContentsId,
+        effectiveSender,
         "pty:data",
         { sessionId, data },
       );
@@ -467,7 +491,7 @@ function attachClient(
       } catch {
         deleteSessionMeta(sessionId);
         sendToSender(
-          senderWebContentsId,
+          effectiveSender,
           "pty:exit",
           { sessionId, exitCode: 0 },
         );
@@ -497,6 +521,7 @@ function createDirectSession(
   rows: number,
   senderWebContentsId?: number,
 ): PtySession {
+  const effectiveSender = getEffectiveSender(senderWebContentsId);
   const createdAt = new Date().toISOString();
   const ringBuffer = new RingBuffer(DEFAULT_RING_BUFFER_BYTES);
   const ptyProcess = pty.spawn(
@@ -517,7 +542,7 @@ function createDirectSession(
     ptyProcess.onData((data: string) => {
       ringBuffer.write(Buffer.from(data));
       sendToSender(
-        senderWebContentsId,
+        effectiveSender,
         "pty:data",
         { sessionId, data },
       );
@@ -530,7 +555,7 @@ function createDirectSession(
       sessions.delete(sessionId);
       deleteSessionMeta(sessionId);
       sendToSender(
-        senderWebContentsId,
+        effectiveSender,
         "pty:exit",
         { sessionId, exitCode },
       );
@@ -739,10 +764,11 @@ export async function createSession(
   });
   const { sessionId, socketPath } = await client.createSession(createParams);
 
+  const effectiveSidecarSender = getEffectiveSender(senderWebContentsId);
   const dataSock = await client.attachDataSocket(
     socketPath,
     (data) => {
-      sendToSender(senderWebContentsId, "pty:data", {
+      sendToSender(effectiveSidecarSender, "pty:data", {
         sessionId,
         data,
       });
@@ -835,10 +861,11 @@ export async function reconnectSession(
       sessionId, cols, rows,
     );
 
+    const effectiveReconnectSender = getEffectiveSender(senderWebContentsId);
     const dataSock = await client.attachDataSocket(
       socketPath,
       (data) => {
-        sendToSender(senderWebContentsId, "pty:data", {
+        sendToSender(effectiveReconnectSender, "pty:data", {
           sessionId,
           data,
         });

@@ -513,7 +513,7 @@ async function init() {
 		const tile = tileManager.createCanvasTile(
 			"term", cx, cy, { cwd },
 		);
-		tileManager.spawnTerminalWebview(tile, true);
+		tileManager.spawnTerminal(tile, true);
 		tileManager.saveCanvasImmediate();
 	});
 
@@ -543,7 +543,7 @@ async function init() {
 			const tile = tileManager.createCanvasTile(
 				"term", cx, cy, { cwd },
 			);
-			tileManager.spawnTerminalWebview(tile, true);
+			tileManager.spawnTerminal(tile, true);
 			tileManager.saveCanvasImmediate();
 		} else if (selected === "new-browser") {
 			const tile = tileManager.createCanvasTile(
@@ -802,7 +802,7 @@ async function init() {
 			const tile = tileManager.createCanvasTile(
 				"term", cx, cy, { cwd },
 			);
-			tileManager.spawnTerminalWebview(tile, true);
+			tileManager.spawnTerminal(tile, true);
 			tileManager.saveCanvasImmediate();
 		} else if (action === "close-tile") {
 			const focusedId = tileManager.getFocusedTileId();
@@ -908,7 +908,7 @@ async function init() {
 					const tile = tileManager.createCanvasTile(
 						"term", cx, cy, { cwd },
 					);
-					tileManager.spawnTerminalWebview(tile, true);
+					tileManager.spawnTerminal(tile, true);
 					tileManager.saveCanvasImmediate();
 				}
 				if (channel === "open-browser-tile") {
@@ -1273,6 +1273,10 @@ async function init() {
 			}
 		});
 	}
+
+	// -- Initialize in-process terminal mode (before tile restore) --
+
+	await tileManager.initInProcessTerminals();
 
 	// -- Restore canvas state --
 

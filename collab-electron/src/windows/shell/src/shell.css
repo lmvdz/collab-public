@@ -961,6 +961,12 @@ body.platform-win {
 	padding: 0 8px;
 }
 
+.terminal-embed-container {
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+}
+
 /* Tile webviews are non-interactive by default */
 .canvas-tile webview {
 	pointer-events: none;

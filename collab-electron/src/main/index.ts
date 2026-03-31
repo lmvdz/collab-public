@@ -25,6 +25,7 @@ import {
   setPref,
   getTerminalBackend,
   getTerminalMode,
+  getInProcessTerminals,
   type WindowState,
   type TerminalTarget,
 } from "./config";
@@ -498,6 +499,7 @@ function createWindow(): void {
   mainWindow.loadURL(getRendererURL("shell"));
 
   setMainWindow(mainWindow);
+  pty.registerShellWebContents(mainWindow.webContents.id);
   registerCanvasRpc(mainWindow);
 }
 
@@ -649,6 +651,11 @@ ipcMain.handle(
     _event,
     { sessionId, lines }: { sessionId: string; lines?: number },
   ) => pty.captureSession(sessionId, lines),
+);
+
+ipcMain.handle(
+  "shell:get-in-process-terminals", 
+  () => getInProcessTerminals()
 );
 
 let settingsOpen = false;

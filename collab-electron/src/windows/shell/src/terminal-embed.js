@@ -1,14 +1,22 @@
-import "@xterm/xterm/css/xterm.css";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { init as initGhostty, Terminal, FitAddon } from "ghostty-web";
+
+// ---------------------------------------------------------------------------
+// WASM initialization gate
+// ---------------------------------------------------------------------------
+
+let ghosttyReady = false;
+async function ensureGhosttyInit() {
+	if (!ghosttyReady) {
+		await initGhostty();
+		ghosttyReady = true;
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Theme (ported from packages/components/src/Terminal/theme.ts)
 // ---------------------------------------------------------------------------
 
-/** @type {import("@xterm/xterm").ITheme} */
+/** @type {import("ghostty-web").ITheme} */
 const darkTheme = {
 	background: "#080808",
 	foreground: "#d4d4d4",
@@ -33,7 +41,7 @@ const darkTheme = {
 	brightWhite: "#ffffff",
 };
 
-/** @type {import("@xterm/xterm").ITheme} */
+/** @type {import("ghostty-web").ITheme} */
 const lightTheme = {
 	background: "#f8f8f8",
 	foreground: "#383a42",
@@ -58,7 +66,7 @@ const lightTheme = {
 	brightWhite: "#ffffff",
 };
 
-/** @returns {import("@xterm/xterm").ITheme} */
+/** @returns {import("ghostty-web").ITheme} */
 function getTheme() {
 	const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
 	return prefersDark ? darkTheme : lightTheme;
@@ -91,7 +99,7 @@ const registry = new Map();
  * @property {() => void} focus
  * @property {() => void} blur
  * @property {() => void} dispose
- * @property {Terminal} term  - xterm.js instance for advanced access
+ * @property {Terminal} term  - ghostty-web instance for advanced access
  */
 
 // ---------------------------------------------------------------------------
@@ -99,17 +107,18 @@ const registry = new Map();
 // ---------------------------------------------------------------------------
 
 /**
- * Create an xterm.js terminal instance inside the given container element.
+ * Create a ghostty-web terminal instance inside the given container element.
  *
  * @param {HTMLElement} container  - DOM element to host the terminal
  * @param {string} sessionId      - PTY session identifier
  * @param {{ scrollbackData?: string|null, mode?: "tmux"|"sidecar"|"direct", restored?: boolean }} [options]
- * @returns {TerminalHandle}
+ * @returns {Promise<TerminalHandle>}
  */
-export function createTerminal(container, sessionId, options = {}) {
+export async function createTerminal(container, sessionId, options = {}) {
+	await ensureGhosttyInit();
 	const { scrollbackData = null, mode = "direct", restored = false } = options;
 
-	// -- xterm.js instance --------------------------------------------------
+	// -- ghostty-web instance -----------------------------------------------
 
 	const term = new Terminal({
 		theme: getTheme(),
@@ -119,25 +128,11 @@ export function createTerminal(container, sessionId, options = {}) {
 		fontWeightBold: "500",
 		cursorBlink: true,
 		scrollback: 200000,
-		allowProposedApi: true,
 	});
 
 	const fit = new FitAddon();
 	term.loadAddon(fit);
 	term.open(container);
-
-	const unicode11 = new Unicode11Addon();
-	term.loadAddon(unicode11);
-	term.unicode.activeVersion = "11";
-
-	// WebGL renderer — falls back to DOM if context unavailable
-	try {
-		const webgl = new WebglAddon();
-		webgl.onContextLoss(() => webgl.dispose());
-		term.loadAddon(webgl);
-	} catch {
-		// DOM renderer fallback — no action needed
-	}
 
 	// Delay initial fit until layout pass has finished
 	requestAnimationFrame(() => {

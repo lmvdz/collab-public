@@ -57,6 +57,7 @@ interface PtySession {
   displayName: string;
   disposables: IDisposable[];
   backend: "tmux" | "direct";
+  ownerWebContentsId?: number;
   target?: string;
   command?: string;
   args?: string[];
@@ -67,6 +68,27 @@ interface PtySession {
 }
 
 const sessions = new Map<string, PtySession>();
+
+/**
+ * Session ownership for sender verification on IPC calls.
+ * Maps sessionId → the webContentsId that created the session.
+ * Covers all backends (tmux, direct, sidecar).
+ */
+const sessionOwners = new Map<string, number>();
+
+/**
+ * Verify that a sender is allowed to operate on a session.
+ * Returns true if the sender owns the session or if the session is
+ * routed to the shell window (in-process mode).
+ */
+export function isSessionOwner(sessionId: string, senderWebContentsId: number): boolean {
+  const owner = sessionOwners.get(sessionId);
+  if (owner == null) return true; // legacy session without ownership tracking
+  if (owner === senderWebContentsId) return true;
+  // In in-process mode, the shell window is the effective sender for all sessions.
+  if (shellWebContentsId != null && senderWebContentsId === shellWebContentsId) return true;
+  return false;
+}
 let shuttingDown = false;
 
 let sidecarClient: SidecarClient | null = null;
@@ -621,7 +643,8 @@ export async function createSession(
     const name = tmuxSessionName(sessionId);
     const shellName = displayBasename(shell) || "shell";
 
-    tmuxExec(
+    await tmuxExecAsync(
+      undefined,
       "new-session", "-d",
       "-s", name,
       "-c", resolvedCwd,
@@ -630,17 +653,19 @@ export async function createSession(
     );
 
     try {
-      tmuxExec("set-environment", "-t", name, "COLLAB_PTY_SESSION_ID", sessionId);
+      await tmuxExecAsync(undefined, "set-environment", "-t", name, "COLLAB_PTY_SESSION_ID", sessionId);
       if (tileId) {
-        tmuxExec("set-environment", "-t", name, "COLLAB_TILE_ID", tileId);
+        await tmuxExecAsync(undefined, "set-environment", "-t", name, "COLLAB_TILE_ID", tileId);
       }
-      tmuxExec("set-environment", "-t", name, "SHELL", shell);
+      await tmuxExecAsync(undefined, "set-environment", "-t", name, "SHELL", shell);
     } catch {
       // Under WSL, the tmux server may not have registered the session yet.
       // The terminal will still work — these env vars are nice-to-have.
     }
 
     attachClient(sessionId, c, r, senderWebContentsId);
+    const _owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+    if (_owner != null) sessionOwners.set(sessionId, _owner);
 
     writeSessionMeta(sessionId, {
       shell,
@@ -652,6 +677,7 @@ export async function createSession(
     const session = sessions.get(sessionId)!;
     session.shell = shell;
     session.displayName = shellName;
+    if (_owner != null) session.ownerWebContentsId = _owner;
 
     return {
       sessionId,
@@ -708,6 +734,8 @@ export async function createSession(
     await ensureTmuxSessionAppearance(tmuxTarget, name);
 
     attachClient(sessionId, c, r, senderWebContentsId, tmuxTarget);
+    const _owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+    if (_owner != null) sessionOwners.set(sessionId, _owner);
 
     writeSessionMeta(
       sessionId,
@@ -723,6 +751,7 @@ export async function createSession(
     session.displayName = resolvedTarget.displayName;
     session.target = resolvedTarget.target;
     session.command = resolvedTarget.command;
+    if (_owner != null) session.ownerWebContentsId = _owner;
     session.args = resolvedTarget.args;
     session.cwdHostPath = resolvedTarget.cwdHostPath;
     session.cwdGuestPath = resolvedTarget.cwdGuestPath;
@@ -744,6 +773,9 @@ export async function createSession(
       r,
       senderWebContentsId,
     );
+
+    const _owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+    if (_owner != null) sessionOwners.set(sessionId, _owner);
 
     writeSessionMeta(
       sessionId,
@@ -805,6 +837,8 @@ export async function createSession(
   );
 
   sidecarSessionIds.add(sessionId);
+  const _owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+    if (_owner != null) sessionOwners.set(sessionId, _owner);
   return {
     sessionId,
     shell: resolvedTarget.command,
@@ -1100,6 +1134,7 @@ export async function killSession(
   }
 
   deleteSessionMeta(sessionId);
+  sessionOwners.delete(sessionId);
 }
 
 export function listSessions(): string[] {

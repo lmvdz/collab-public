@@ -583,16 +583,18 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:write",
-  (_event, { sessionId, data }: { sessionId: string; data: string }) => {
+  (event, { sessionId, data }: { sessionId: string; data: string }) => {
     if (typeof data !== "string" || data.length > 1_048_576) return;
+    if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
     pty.writeToSession(sessionId, data);
   },
 );
 
 ipcMain.handle(
   "pty:send-raw-keys",
-  (_event, { sessionId, data }: { sessionId: string; data: string }) => {
+  (event, { sessionId, data }: { sessionId: string; data: string }) => {
     if (typeof data !== "string" || data.length > 1_048_576) return;
+    if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
     pty.sendRawKeys(sessionId, data);
   },
 );
@@ -600,19 +602,24 @@ ipcMain.handle(
 ipcMain.handle(
   "pty:resize",
   (
-    _event,
+    event,
     {
       sessionId,
       cols,
       rows,
     }: { sessionId: string; cols: number; rows: number },
-  ) => pty.resizeSession(sessionId, cols, rows),
+  ) => {
+    if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
+    return pty.resizeSession(sessionId, cols, rows);
+  },
 );
 
 ipcMain.handle(
   "pty:kill",
-  (_event, { sessionId }: { sessionId: string }) =>
-    pty.killSession(sessionId),
+  (event, { sessionId }: { sessionId: string }) => {
+    if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
+    return pty.killSession(sessionId);
+  },
 );
 
 ipcMain.handle(

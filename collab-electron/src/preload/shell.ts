@@ -252,8 +252,6 @@ contextBridge.exposeInMainWorld("shellApi", {
   ptyKill: (sessionId: string): Promise<void> =>
     ipcRenderer.invoke("pty:kill", { sessionId }),
 
-  ptyKillSession: (sessionId: string): Promise<void> =>
-    ipcRenderer.invoke("pty:kill", { sessionId }),
 
   ptyCapture: (
     sessionId: string, lines?: number,

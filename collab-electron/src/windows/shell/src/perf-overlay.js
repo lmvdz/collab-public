@@ -86,6 +86,7 @@ let glAttached = false;
 
 // External stats
 let terminalCount = 0;
+let inProcessMode = false;
 
 // Panel tracking
 /** @type {ResizeObserver | null} */
@@ -272,6 +273,15 @@ export function setTerminalCount(count) {
   terminalCount = count;
 }
 
+/**
+ * Set whether in-process terminal mode is active.
+ * When false (legacy webview mode), CPU/GPU timing is unavailable.
+ * @param {boolean} enabled
+ */
+export function setInProcessMode(enabled) {
+  inProcessMode = enabled;
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -348,10 +358,15 @@ function drawOverlay(now) {
   y += 16;
 
   // CPU / GPU
-  ctx.fillStyle = msColor(lastCpuTime);
-  ctx.fillText(`CPU: ${lastCpuTime.toFixed(2)} ms`, col1, y);
+  if (inProcessMode) {
+    ctx.fillStyle = msColor(lastCpuTime);
+    ctx.fillText(`CPU: ${lastCpuTime.toFixed(2)} ms`, col1, y);
+  } else {
+    ctx.fillStyle = "#666";
+    ctx.fillText("CPU: n/a (webview)", col1, y);
+  }
 
-  if (gpuTimingAvailable) {
+  if (gpuTimingAvailable && inProcessMode) {
     ctx.fillStyle = msColor(lastGpuTime);
     ctx.fillText(`GPU: ${lastGpuTime.toFixed(2)} ms`, col2, y);
   } else {
@@ -369,7 +384,7 @@ function drawOverlay(now) {
   // Renderer label
   ctx.font = FONT_SMALL;
   ctx.fillStyle = "#888";
-  ctx.fillText("WebGL2 Instanced", col1, y);
+  ctx.fillText(inProcessMode ? "In-process (WebGL)" : "Legacy (webview)", col1, y);
   if (gpuTimingAvailable) {
     ctx.fillText("GPU timer: active", col2, y);
   }
@@ -489,10 +504,6 @@ export function toggle() {
     if (canvas) canvas.style.display = "none";
     stopLoop();
   }
-}
-
-export function isVisible() {
-  return visible;
 }
 
 // ---------------------------------------------------------------------------

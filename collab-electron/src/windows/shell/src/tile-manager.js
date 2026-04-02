@@ -12,6 +12,7 @@ import { workspaceRootMatch } from "@collab/shared/path-utils";
 import { attachDrag, attachResize } from "./tile-interactions.js";
 import { findAutoPlacement } from "./canvas-rpc.js";
 import { createTerminal, getTerminal, disposeTerminal, initPtyDataDispatch, initGpuRenderer } from "./terminal-embed.js";
+import { setInProcessMode } from "./perf-overlay.js";
 
 let inProcessTerminals = false;
 
@@ -615,7 +616,7 @@ export function createTileManager({
 				"tile_closed", { type: tile.type },
 			);
 			if (tile.type === "term" && tile.ptySessionId) {
-				window.shellApi.ptyKillSession(tile.ptySessionId);
+				window.shellApi.ptyKill(tile.ptySessionId);
 				if (onTerminalTileClosed) {
 					onTerminalTileClosed(tile.ptySessionId);
 				}
@@ -807,6 +808,7 @@ export function createTileManager({
 			initPtyDataDispatch();
 			await initGpuRenderer();
 		}
+		setInProcessMode(inProcessTerminals);
 	}
 
 	return {

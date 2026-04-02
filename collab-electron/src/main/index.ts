@@ -447,14 +447,93 @@ function getRendererURL(name: string): string {
   ).href;
 }
 
+let splashWindow: BrowserWindow | null = null;
+let pendingMaximize = false;
+
+const SPLASH_HTML = `<!doctype html><html><head><meta charset="UTF-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#f8f8f8;--fg:#202020;--muted:#71717b;--border:#cecece;--accent:#22a05a;--dot:rgba(0,0,0,0.08);--dot-hi:rgba(34,160,90,0.25)}
+@media(prefers-color-scheme:dark){:root{--bg:#121212;--fg:#dcdcdc;--muted:#848484;--border:rgba(255,255,255,0.2);--accent:#48d282;--dot:rgba(255,255,255,0.07);--dot-hi:rgba(72,210,130,0.35)}}
+body{width:100vw;height:100vh;overflow:hidden;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;-webkit-app-region:drag}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+.center{position:relative;display:flex;flex-direction:column;align-items:center;gap:14px;animation:fu .5s ease-out both}
+@keyframes fu{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+.wm{font-size:20px;font-weight:600;letter-spacing:.12em;color:var(--fg);text-transform:lowercase}
+.bt{width:160px;height:3px;border-radius:2px;background:var(--border);overflow:hidden}
+.bf{width:30%;height:100%;border-radius:2px;background:var(--accent);animation:bi 1.5s ease-in-out infinite}
+@keyframes bi{0%{transform:translateX(-160px)}100%{transform:translateX(160px)}}
+.st{color:var(--muted);font-size:11px;letter-spacing:.04em}
+</style></head><body>
+<canvas id="g"></canvas>
+<div class="center"><div class="wm">collaborator</div><div class="bt"><div class="bf"></div></div><div class="st">Loading\u2026</div></div>
+<script>
+var c=document.getElementById("g"),x=c.getContext("2d"),d=devicePixelRatio||1;
+c.width=c.offsetWidth*d;c.height=c.offsetHeight*d;x.setTransform(d,0,0,d,0,0);
+var S=36,dk=matchMedia("(prefers-color-scheme:dark)").matches,
+dc=dk?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.08)",
+dh=dk?"rgba(72,210,130,0.35)":"rgba(34,160,90,0.25)",
+w=c.offsetWidth,h=c.offsetHeight,cols=Math.ceil(w/S)+1,rows=Math.ceil(h/S)+1,
+cx=w/2,cy=h/2,md=Math.hypot(cx,cy),t0=performance.now();
+function draw(n){var t=(n-t0)/1e3;x.clearRect(0,0,w,h);
+for(var r=0;r<rows;r++)for(var i=0;i<cols;i++){
+var px=i*S,py=r*S,dd=Math.hypot(px-cx,py-cy)/md,a=t-dd*.5;
+if(a<0)continue;var al=Math.min(a/.3,1),p=.5+.5*Math.sin(t*2-dd*4),hi=p>.92&&a>.4;
+x.globalAlpha=al*(hi?1:.7);x.fillStyle=hi?dh:dc;
+x.beginPath();x.arc(px,py,hi?1.8:1,0,6.283);x.fill()}
+x.globalAlpha=1;requestAnimationFrame(draw)}requestAnimationFrame(draw);
+<\/script></body></html>`;
+
+function createSplashWindow(
+  display: Electron.Display,
+): BrowserWindow {
+  const splashWidth = 420;
+  const splashHeight = 320;
+  const { x, y, width, height } = display.workArea;
+  const splash = new BrowserWindow({
+    width: splashWidth,
+    height: splashHeight,
+    x: Math.round(x + (width - splashWidth) / 2),
+    y: Math.round(y + (height - splashHeight) / 2),
+    frame: false,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    backgroundColor: "#121212",
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  splash.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(SPLASH_HTML)}`,
+  );
+  return splash;
+}
+
+function closeSplash(): void {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.close();
+  }
+  splashWindow = null;
+}
+
 function createWindow(): void {
   const saved = config.window_state;
   const useSaved =
     saved !== null &&
     (saved.isMaximized || boundsVisibleOnAnyDisplay(saved));
   const state = useSaved ? saved : DEFAULT_STATE;
+  pendingMaximize = !!state.isMaximized;
+
+  // Show splash on the display where the main window will appear.
+  const targetPoint = useSaved
+    ? { x: state.x + Math.round(state.width / 2), y: state.y + Math.round(state.height / 2) }
+    : screen.getCursorScreenPoint();
+  const targetDisplay = screen.getDisplayNearestPoint(targetPoint);
+  splashWindow = createSplashWindow(targetDisplay);
 
   const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    show: false,
     width: state.width,
     height: state.height,
     minWidth: 400,
@@ -489,10 +568,6 @@ function createWindow(): void {
   }
 
   mainWindow = new BrowserWindow(windowOptions);
-
-  if (state.isMaximized) {
-    mainWindow.maximize();
-  }
 
   mainWindow.on("move", debouncedSaveWindowState);
   mainWindow.on("resize", debouncedSaveWindowState);
@@ -689,12 +764,12 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
-  "shell:get-in-process-terminals", 
+  "shell:get-in-process-terminals",
   () => getInProcessTerminals()
 );
 
 ipcMain.handle(
-  "shell:get-gpu-renderer", 
+  "shell:get-gpu-renderer",
   () => getGpuRenderer()
 );
 
@@ -858,6 +933,9 @@ app.whenReady().then(async () => {
   trackEvent("app_launched");
 
   mainWindow!.webContents.on("did-finish-load", () => {
+    if (pendingMaximize) mainWindow!.maximize();
+    mainWindow!.show();
+    closeSplash();
     sendLoadingDone();
     if (pendingFilePath) {
       mainWindow!.webContents.send(

@@ -265,6 +265,11 @@ function utf8Env(): Record<string, string> {
   // so CLI tools (e.g. Claude Code) render with full true color
   // instead of falling back to 256-color palettes.
   env.COLORTERM = "truecolor";
+  // Reduce git lock-file overhead on WSL 9P mounts (\\wsl$ / /mnt/).
+  // Prompt plugins like oh-my-zsh/powerlevel10k run `git status` on
+  // every prompt; unnecessary .lock files are expensive across the
+  // Win32↔Linux boundary.
+  env.GIT_OPTIONAL_LOCKS = "0";
   const terminfoDir = getTerminfoDir();
   if (terminfoDir) {
     env.TERMINFO = terminfoDir;
@@ -693,12 +698,19 @@ export async function createSession(
   const backend = backendForResolvedTarget(resolvedTarget);
 
   if (backend === "tmux") {
+    const t0 = performance.now();
+    const lap = (label: string) => {
+      const elapsed = (performance.now() - t0).toFixed(1);
+      console.log(`[pty] createSession tmux +${elapsed}ms  ${label}`);
+    };
+
     const sessionId = crypto.randomBytes(8).toString("hex");
     const name = tmuxSessionName(sessionId);
     const shell = resolvedTarget.command;
     const tmuxTarget = resolvedTarget.target;
     const tmuxCwd = resolvedTarget.cwdGuestPath ?? resolvedTarget.cwdHostPath;
 
+    lap(`new-session start (target=${tmuxTarget})`);
     await tmuxExecAsync(
       tmuxTarget,
       "new-session", "-d",
@@ -707,6 +719,7 @@ export async function createSession(
       "-x", String(c),
       "-y", String(r),
     );
+    lap("new-session done");
 
     // Run set-environment and appearance setup in parallel — they are
     // independent post-creation steps.  On WSL each tmuxExecAsync spawns
@@ -729,8 +742,10 @@ export async function createSession(
       );
     }
     await Promise.all(postCreateTasks);
+    lap("post-create tasks done (set-env ‖ appearance)");
 
     attachClient(sessionId, c, r, senderWebContentsId, tmuxTarget);
+    lap("attachClient done");
     const _owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
     if (_owner != null) sessionOwners.set(sessionId, _owner);
 
@@ -742,6 +757,7 @@ export async function createSession(
         new Date().toISOString(),
       ),
     );
+    lap("createSession complete");
 
     const session = sessions.get(sessionId)!;
     session.shell = shell;
@@ -835,7 +851,7 @@ export async function createSession(
 
   sidecarSessionIds.add(sessionId);
   const _owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
-    if (_owner != null) sessionOwners.set(sessionId, _owner);
+  if (_owner != null) sessionOwners.set(sessionId, _owner);
   return {
     sessionId,
     shell: resolvedTarget.command,

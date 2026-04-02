@@ -101,17 +101,6 @@ class FontAtlas {
   // -----------------------------------------------------------------------
 
   /**
-   * @param {number} fontSize         - logical font size in CSS pixels
-   * @param {string} fontFamily       - CSS font-family value
-   * @param {number} [devicePixelRatio=1] - display scaling factor
-   */
-  /**
-   * @param {number} fontSize
-   * @param {string} fontFamily
-   * @param {number} [devicePixelRatio=1]
-   * @param {{ cellWidth?: number, cellHeight?: number }} [overrides]
-   */
-  /**
    * @param {number} fontSize
    * @param {string} fontFamily
    * @param {number} [devicePixelRatio=1]
@@ -335,7 +324,10 @@ class FontAtlas {
     }
 
     this._dirty = true;
-    console.warn(`[font-atlas] Evicted ${evicted} non-ASCII glyphs (atlas full at ${this.atlasWidth}x${this.atlasHeight})`);
+    this._evictionCount = (this._evictionCount || 0) + 1;
+    if (this._evictionCount <= 3) {
+      console.warn(`[font-atlas] Evicted ${evicted} non-ASCII glyphs (atlas full at ${this.atlasWidth}x${this.atlasHeight})`);
+    }
     return true;
   }
 

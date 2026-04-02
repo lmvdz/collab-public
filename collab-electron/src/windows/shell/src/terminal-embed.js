@@ -48,6 +48,15 @@ const DATA_BUFFER_FLUSH_MS = 5;
 const IS_MAC = window.shellApi.getPlatform() === "darwin";
 const textEncoder = new TextEncoder();
 
+// Scrollback: start small to avoid a CPU spike on terminal creation, then
+// grow to the full limit once the terminal is idle and interactive.
+const INITIAL_SCROLLBACK = 1000;
+const FULL_SCROLLBACK = 200000;
+const SCROLLBACK_GROW_DELAY_MS = 2000;
+
+/** Yield to the main thread so long-running init doesn't block frames. */
+const yieldMain = () => new Promise((r) => setTimeout(r, 0));
+
 // ---------------------------------------------------------------------------
 // Terminal registry
 // ---------------------------------------------------------------------------
@@ -94,13 +103,16 @@ export async function createTerminal(container, sessionId, options = {}) {
 		fontWeight: "300",
 		fontWeightBold: "500",
 		cursorBlink: true,
-		scrollback: 200000,
+		scrollback: INITIAL_SCROLLBACK,
 		allowProposedApi: true,
 	});
 
 	const fit = new FitAddon();
 	term.loadAddon(fit);
 	term.open(container);
+
+	// Yield after the heavy DOM mount so the browser can paint a frame.
+	await yieldMain();
 
 	// Force 2x rendering for sharper text with the WebGL addon.
 	// The WebGL canvas renders at double resolution and CSS scales it down,
@@ -113,6 +125,9 @@ export async function createTerminal(container, sessionId, options = {}) {
 	const unicode11 = new Unicode11Addon();
 	term.loadAddon(unicode11);
 	term.unicode.activeVersion = "11";
+
+	// Yield before WebGL context creation — the most GPU-heavy init step.
+	await yieldMain();
 
 	// -- GPU renderer (xterm.js WebglAddon) ------------------------------------
 	// WebglAddon provides hardware-accelerated rendering via WebGL, avoiding
@@ -151,6 +166,12 @@ export async function createTerminal(container, sessionId, options = {}) {
 			webglAddon = null;
 		}
 	}
+
+	// Grow scrollback to full capacity after the terminal is interactive.
+	// Deferred so the initial creation path stays fast.
+	setTimeout(() => {
+		try { term.options.scrollback = FULL_SCROLLBACK; } catch { /* disposed */ }
+	}, SCROLLBACK_GROW_DELAY_MS);
 
 	// -- Perf overlay: CPU/GPU render timing ------------------------------------
 	// term.onRender fires after xterm actually processes and paints queued

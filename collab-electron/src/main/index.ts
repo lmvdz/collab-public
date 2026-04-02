@@ -62,6 +62,13 @@ if (!process.env.LANG || !process.env.LANG.includes("UTF-8")) {
 }
 
 process.on("uncaughtException", (error) => {
+  // node-pty on Windows queues resize commands internally and executes them
+  // asynchronously in a Socket data handler.  If the pty exits between the
+  // queue and the execution the resize throws — but there is no way to wrap
+  // this in a try/catch from userland.  Swallow it instead of logging a
+  // scary "[crash]" line for every dead terminal.
+  if (error.message === "Cannot resize a pty that has already exited") return;
+
   trackEvent("app_crash", {
     type: "uncaughtException",
     message: error.message,

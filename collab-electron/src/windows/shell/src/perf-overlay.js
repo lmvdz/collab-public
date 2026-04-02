@@ -80,6 +80,7 @@ let gl = null;
 let timerExt = null;
 /** @type {WebGLQuery | null} */
 let pendingQuery = null;
+let queryActive = false;
 let lastGpuTime = 0;
 let gpuTimingAvailable = false;
 let glAttached = false;
@@ -202,21 +203,27 @@ export function gpuTimerBegin() {
   // Reclaim any stale query (e.g. from a previous frame that never ended
   // cleanly, or after context restore).
   if (pendingQuery) {
+    if (queryActive) {
+      gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+      queryActive = false;
+    }
     gl.deleteQuery(pendingQuery);
     pendingQuery = null;
   }
 
   pendingQuery = gl.createQuery();
   gl.beginQuery(timerExt.TIME_ELAPSED_EXT, pendingQuery);
+  queryActive = true;
 }
 
 /**
  * End the GPU timer query. Call after rendering.
  */
 export function gpuTimerEnd() {
-  if (!gpuTimingAvailable || !gl || !timerExt || !pendingQuery) return;
+  if (!gpuTimingAvailable || !gl || !timerExt || !pendingQuery || !queryActive) return;
   if (gl.isContextLost()) return;
   gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+  queryActive = false;
 }
 
 /**
@@ -224,7 +231,7 @@ export function gpuTimerEnd() {
  * Called every frame; returns early if the result is not yet available.
  */
 function collectGpuTime() {
-  if (!gl || !timerExt || !pendingQuery) return;
+  if (!gl || !timerExt || !pendingQuery || queryActive) return;
 
   if (gl.isContextLost()) {
     pendingQuery = null;

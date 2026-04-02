@@ -519,11 +519,10 @@ function attachClient(
     ptyProcess.onExit(() => {
       if (shuttingDown) {
         sessions.delete(sessionId);
+        sessionOwners.delete(sessionId);
         return;
       }
-      try {
-        tmuxExecForTarget(target, "has-session", "-t", name);
-      } catch {
+      tmuxExecAsync(target, "has-session", "-t", name).catch(() => {
         deleteSessionMeta(sessionId);
         sendToSender(
           effectiveSender,
@@ -532,8 +531,9 @@ function attachClient(
         );
         // Also notify the shell BrowserWindow for terminal list cleanup
         sendToMainWindow("pty:exit", { sessionId, exitCode: 0 });
-      }
+      });
       sessions.delete(sessionId);
+      sessionOwners.delete(sessionId);
     }),
   );
 
@@ -588,6 +588,7 @@ function createDirectSession(
   disposables.push(
     ptyProcess.onExit(({ exitCode }) => {
       sessions.delete(sessionId);
+      sessionOwners.delete(sessionId);
       deleteSessionMeta(sessionId);
       sendToSender(
         effectiveSender,
@@ -634,13 +635,14 @@ export async function createSession(
   cwdGuestPath?: string;
 }> {
   const resolvedCwd = cwd || os.homedir();
-  const [c, r] = clampDims(cols, rows);
+  const [c, r] = clampDims(cols ?? 80, rows ?? 24);
 
   const mode = getTerminalMode();
 
   if (mode === "tmux") {
     const sessionId = crypto.randomBytes(8).toString("hex");
     const name = tmuxSessionName(sessionId);
+    const shell = process.env.SHELL || "/bin/zsh";
     const shellName = displayBasename(shell) || "shell";
 
     await tmuxExecAsync(
@@ -893,6 +895,9 @@ export async function reconnectSession(
       // pty already exited — ignore resize
     }
 
+    const owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+    if (owner != null) sessionOwners.set(sessionId, owner);
+
     return withOptionalFields({
       sessionId,
       shell: session.command || session.shell,
@@ -936,6 +941,8 @@ export async function reconnectSession(
     const shell = meta?.command || meta?.shell || process.env.SHELL || "/bin/zsh";
     const displayName = meta?.displayName || displayBasename(shell) || "shell";
     sidecarSessionIds.add(sessionId);
+    const owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+    if (owner != null) sessionOwners.set(sessionId, owner);
 
     return withOptionalFields({
       sessionId,
@@ -977,6 +984,8 @@ export async function reconnectSession(
 
   await ensureTmuxSessionAppearance(target, name);
   attachClient(sessionId, cols, rows, senderWebContentsId, target);
+  const owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+  if (owner != null) sessionOwners.set(sessionId, owner);
 
   try {
     await tmuxExecAsync(
@@ -1127,7 +1136,7 @@ export async function killSession(
   if (backend === "tmux") {
     const name = tmuxSessionName(sessionId);
     try {
-      tmuxExecForTarget(tmuxTargetForSession(sessionId), "kill-session", "-t", name);
+      await tmuxExecAsync(tmuxTargetForSession(sessionId), "kill-session", "-t", name);
     } catch {
       // Session may already be dead
     }
@@ -1153,13 +1162,17 @@ export function killAll(): void {
     session.pty.kill();
   }
   sessions.clear();
+  sessionOwners.clear();
 }
 
 const KILL_ALL_TIMEOUT_MS = 2000;
 
 export function killAllAndWait(): Promise<void> {
   shuttingDown = true;
-  if (sessions.size === 0) return Promise.resolve();
+  if (sessions.size === 0) {
+    sessionOwners.clear();
+    return Promise.resolve();
+  }
 
   const pending: Promise<void>[] = [];
   for (const [id, session] of sessions) {
@@ -1172,6 +1185,7 @@ export function killAllAndWait(): Promise<void> {
     session.pty.kill();
     sessions.delete(id);
   }
+  sessionOwners.clear();
 
   const timeout = new Promise<void>((resolve) =>
     setTimeout(resolve, KILL_ALL_TIMEOUT_MS),

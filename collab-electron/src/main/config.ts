@@ -123,6 +123,7 @@ const ALLOWED_PREF_PREFIXES = [
 ];
 
 function isAllowedPrefKey(key: string): boolean {
+  if (key.length > 64) return false; // prevent unbounded key growth
   if (ALLOWED_PREF_KEYS.has(key)) return true;
   return ALLOWED_PREF_PREFIXES.some((p) => key.startsWith(p));
 }

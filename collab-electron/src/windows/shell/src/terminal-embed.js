@@ -54,8 +54,8 @@ const INITIAL_SCROLLBACK = 1000;
 const FULL_SCROLLBACK = 200000;
 const SCROLLBACK_GROW_DELAY_MS = 2000;
 
-/** Yield to the main thread so long-running init doesn't block frames. */
-const yieldMain = () => new Promise((r) => setTimeout(r, 0));
+/** Schedule work on the next animation frame (returns a promise). */
+const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
 
 // ---------------------------------------------------------------------------
 // Terminal registry
@@ -84,7 +84,9 @@ const registry = new Map();
 
 /**
  * Create an xterm.js terminal instance inside the given container element.
- * Optionally loads the WebglAddon for GPU-accelerated rendering.
+ * Returns a handle immediately — all heavy initialisation (DOM mount, addon
+ * loading, WebGL context creation) is spread across animation frames so the
+ * main thread is never blocked for more than a single lightweight phase.
  *
  * @param {HTMLElement} container
  * @param {string} sessionId
@@ -94,115 +96,25 @@ const registry = new Map();
 export async function createTerminal(container, sessionId, options = {}) {
 	const { scrollbackData = null, restored = false } = options;
 
-	// -- xterm.js instance -----------------------------------------------------
+	const t0 = performance.now();
+	const lap = (label) => {
+		const ms = (performance.now() - t0).toFixed(1);
+		console.log(`[terminal-embed] createTerminal +${ms}ms  ${label}`);
+	};
 
-	const term = new Terminal({
-		theme: getTheme(),
-		fontFamily: 'Menlo, Monaco, "Cascadia Mono", Consolas, "Courier New", monospace',
-		fontSize: 12,
-		fontWeight: "300",
-		fontWeightBold: "500",
-		cursorBlink: true,
-		scrollback: INITIAL_SCROLLBACK,
-		allowProposedApi: true,
-	});
+	// -- Mutable state shared between the handle and the init pipeline ---------
 
-	const fit = new FitAddon();
-	term.loadAddon(fit);
-	term.open(container);
-
-	// Yield after the heavy DOM mount so the browser can paint a frame.
-	await yieldMain();
-
-	// Force 2x rendering for sharper text with the WebGL addon.
-	// The WebGL canvas renders at double resolution and CSS scales it down,
-	// producing crisper glyphs similar to native ClearType rendering.
-	if (useGpuRenderer && window.devicePixelRatio <= 1) {
-		term.options.devicePixelRatio = 2;
-	}
-
-	// Unicode 11 support for proper emoji/wide character handling
-	const unicode11 = new Unicode11Addon();
-	term.loadAddon(unicode11);
-	term.unicode.activeVersion = "11";
-
-	// Yield before WebGL context creation — the most GPU-heavy init step.
-	await yieldMain();
-
-	// -- GPU renderer (xterm.js WebglAddon) ------------------------------------
-	// WebglAddon provides hardware-accelerated rendering via WebGL, avoiding
-	// the DOM renderer's partial-paint artifacts during rapid writes.
-
+	/** @type {Terminal|null} */
+	let term = null;
+	/** @type {FitAddon|null} */
+	let fit = null;
 	let webglAddon = null;
+	let disposed = false;
+	let ready = false;
+	let pendingFocus = false;
+	let gpuTimerOpen = false;
 
-	if (useGpuRenderer) {
-		try {
-			webglAddon = new WebglAddon();
-			webglAddon.onContextLoss(() => {
-				console.warn("[terminal-embed] WebGL context lost, falling back to DOM renderer");
-				webglAddon?.dispose();
-				webglAddon = null;
-			});
-			term.loadAddon(webglAddon);
-			console.log("[terminal-embed] WebGL renderer loaded");
-
-			// Attach the WebGL context to the perf overlay for GPU timer queries.
-			// _renderer._gl is an internal property — access is wrapped in
-			// try/catch because xterm addon internals may change across versions.
-			// attachGL is idempotent (only attaches once), so calling this per
-			// terminal is safe — the first successful call wins.
-			// Deferred to rAF because the renderer initialises asynchronously
-			// during the first paint after loadAddon.
-			requestAnimationFrame(() => {
-				try {
-					const glCtx = webglAddon?._renderer?._gl;
-					if (glCtx) attachGL(glCtx);
-				} catch {
-					// Non-fatal — GPU timer will show "n/a".
-				}
-			});
-		} catch (err) {
-			console.warn("[terminal-embed] WebGL addon failed, using DOM fallback:", err);
-			webglAddon = null;
-		}
-	}
-
-	// Grow scrollback to full capacity after the terminal is interactive.
-	// Deferred so the initial creation path stays fast.
-	setTimeout(() => {
-		try { term.options.scrollback = FULL_SCROLLBACK; } catch { /* disposed */ }
-	}, SCROLLBACK_GROW_DELAY_MS);
-
-	// -- Perf overlay: CPU/GPU render timing ------------------------------------
-	// term.onRender fires after xterm actually processes and paints queued
-	// data. We call markCpuEnd here so the perf overlay measures the full
-	// parse+render cost, not just the near-instant term.write() enqueue.
-	// GPU timer queries bracket the same window for GPU-side cost.
-	term.onRender(() => { markCpuEnd(); gpuTimerEnd(); });
-
-	// -- Scroll handling -------------------------------------------------------
-	// Prevent wheel events from bubbling to the canvas pan/zoom handler.
-	// tmux mouse mode handles scrollback via mouse wheel natively.
-	// Hold Shift while clicking/dragging to select text (bypasses tmux mouse capture).
-	const handleWheel = (e) => { e.stopPropagation(); };
-	container.addEventListener("wheel", handleWheel, { passive: true });
-
-	// Delay initial fit until layout pass has finished
-	requestAnimationFrame(() => {
-		requestAnimationFrame(() => fit.fit());
-	});
-
-	// -- Restore / initial content ---------------------------------------------
-
-	if (!restored) {
-		term.write("\x1b[38;2;100;100;100mStarting...\x1b[0m");
-	}
-
-	if (restored && scrollbackData) {
-		term.write(scrollbackData);
-	}
-
-	// -- Data buffering --------------------------------------------------------
+	// -- Data buffering (works before and after xterm is ready) -----------------
 
 	/** @type {Uint8Array[]} */
 	let dataBuffer = [];
@@ -215,112 +127,192 @@ export async function createTerminal(container, sessionId, options = {}) {
 			flushTimer = undefined;
 			return;
 		}
+		if (!term || !ready) return; // will be flushed when ready
 		const chunks = dataBuffer;
 		dataBuffer = [];
 		flushTimer = undefined;
 
 		if (firstData) {
 			firstData = false;
-			// Clear the "Starting..." placeholder (or tmux stale frame).
-			// Avoid term.reset() — it destroys the WebGL texture atlas and
-			// can leave the renderer in a broken state where subsequent
-			// writes are invisible.
 			term.write("\x1b[2J\x1b[H");
 		}
-		// Mark the start of CPU/GPU work. markCpuEnd + gpuTimerEnd are called
-		// from onRender (above) which fires after xterm actually processes and
-		// paints the data — measuring the real parse+render cost.
 		markCpuStart();
 		gpuTimerBegin();
+		gpuTimerOpen = true;
 		for (const chunk of chunks) {
 			term.write(chunk);
 		}
 	};
 
-	/**
-	 * Buffer incoming PTY data and flush on a short timer.
-	 * @param {string|Uint8Array} data
-	 */
 	const writeBuffered = (data) => {
 		const chunk = typeof data === "string" ? textEncoder.encode(data) : data;
 		dataBuffer.push(chunk);
-		if (flushTimer === undefined) {
+		if (ready && flushTimer === undefined) {
 			flushTimer = window.setTimeout(flushData, DATA_BUFFER_FLUSH_MS);
 		}
 	};
 
-	// -- Input handling --------------------------------------------------------
+	// -- Cleanup bookkeeping (accumulates as phases complete) -------------------
 
+	const cleanups = [];
+
+	// -- Resize state (shared with Phase 2) ------------------------------------
+
+	const FIT_DEBOUNCE_MS = 100;
+	let fitTimer = 0;
+	let resizeObserver = null;
+
+	// -- Build handle (returned immediately) ------------------------------------
+
+	/** @type {TerminalHandle} */
+	const handle = {
+		sessionId,
+		write: writeBuffered,
+		focus() {
+			if (term && ready) term.focus();
+			else pendingFocus = true;
+		},
+		blur() {
+			if (term) term.blur();
+		},
+		get term() { return term; },
+		dispose() {
+			disposed = true;
+			if (flushTimer !== undefined) {
+				clearTimeout(flushTimer);
+				// Flush remaining data synchronously before teardown
+				if (term && ready && dataBuffer.length > 0) {
+					const chunks = dataBuffer;
+					dataBuffer = [];
+					for (const chunk of chunks) term.write(chunk);
+				}
+			}
+			if (gpuTimerOpen) { gpuTimerEnd(); gpuTimerOpen = false; }
+			clearTimeout(fitTimer);
+			for (const fn of cleanups) {
+				try { fn(); } catch { /* best-effort */ }
+			}
+			if (webglAddon) { webglAddon.dispose(); webglAddon = null; }
+			if (term) { term.dispose(); term = null; }
+			registry.delete(sessionId);
+			earlyDataBuffers.delete(sessionId);
+			setTerminalCount(registry.size);
+		},
+	};
+
+	// Register immediately so PTY data arriving during init is buffered
+	// on the handle rather than in the early-data fallback map.
+	registry.set(sessionId, handle);
+	setTerminalCount(registry.size);
+
+	// Drain any data that arrived before we registered
+	const early = earlyDataBuffers.get(sessionId);
+	if (early) {
+		earlyDataBuffers.delete(sessionId);
+		for (const chunk of early.chunks) handle.write(chunk);
+	}
+
+	// =========================================================================
+	// Phase 1 (next frame): xterm instance + DOM mount
+	// =========================================================================
+
+	await nextFrame();
+	if (disposed) return handle;
+	lap("phase 1 start: new Terminal + open");
+
+	term = new Terminal({
+		theme: getTheme(),
+		fontFamily: 'Menlo, Monaco, "Cascadia Mono", Consolas, "Courier New", monospace',
+		fontSize: 12,
+		fontWeight: "300",
+		fontWeightBold: "500",
+		cursorBlink: true,
+		scrollback: INITIAL_SCROLLBACK,
+		allowProposedApi: true,
+	});
+
+	fit = new FitAddon();
+	term.loadAddon(fit);
+	term.open(container);
+
+	if (!restored) {
+		term.write("\x1b[38;2;100;100;100mStarting...\x1b[0m");
+	}
+	if (restored && scrollbackData) {
+		term.write(scrollbackData);
+	}
+
+	// =========================================================================
+	// Phase 2 (next frame): addons, input wiring, resize observer
+	// =========================================================================
+
+	lap("phase 1 done");
+	await nextFrame();
+	if (disposed) return handle;
+	lap("phase 2 start: addons + input wiring");
+
+	// Unicode 11 support
+	const unicode11 = new Unicode11Addon();
+	term.loadAddon(unicode11);
+	term.unicode.activeVersion = "11";
+
+	// Perf overlay hooks
+	term.onRender(() => { markCpuEnd(); if (gpuTimerOpen) { gpuTimerEnd(); gpuTimerOpen = false; } });
+
+	// Scroll isolation
+	const handleWheel = (e) => { e.stopPropagation(); };
+	container.addEventListener("wheel", handleWheel, { passive: true });
+	cleanups.push(() => container.removeEventListener("wheel", handleWheel));
+
+	// Input handling
 	const copySelectionToClipboard = () => {
 		const selection = term.getSelection();
 		if (!selection) return false;
 		void navigator.clipboard.writeText(selection).catch(() => {});
 		return true;
 	};
-
 	let suppressPasteEvent = false;
-
 	const pasteClipboardText = async () => {
 		try {
 			const text = await navigator.clipboard.readText();
-			if (text) {
-				window.shellApi.ptyWrite(sessionId, text);
-			}
-		} catch {
-			// Clipboard access can fail outside a user gesture.
-		}
+			if (text) window.shellApi.ptyWrite(sessionId, text);
+		} catch { /* noop */ }
 	};
-
 	const pasteFromShortcut = () => {
 		suppressPasteEvent = true;
 		void pasteClipboardText();
 	};
 
 	term.attachCustomKeyEventHandler((e) => {
-		// Shift+Enter — send CSI u escape for TUI apps
 		if (e.key === "Enter" && e.shiftKey) {
 			if (e.type === "keydown") {
 				window.shellApi.ptySendRawKeys(sessionId, "\x1b[13;2u");
 			}
 			return false;
 		}
-
 		const primaryModifier = IS_MAC ? e.metaKey : e.ctrlKey;
-
 		if (e.type === "keydown" && primaryModifier) {
 			const key = e.key.toLowerCase();
 			if (key === "c" && copySelectionToClipboard()) return false;
 			if (key === "v") { pasteFromShortcut(); return false; }
-
-			// Windows/Linux: also support Ctrl+Shift+C / Ctrl+Shift+V
 			if (!IS_MAC && e.shiftKey) {
 				if (key === "c" && copySelectionToClipboard()) return false;
 				if (key === "v") { pasteFromShortcut(); return false; }
 			}
 		}
-
-		// Shift+Insert paste
 		if (e.type === "keydown" && e.shiftKey && e.key === "Insert") {
 			pasteFromShortcut();
 			return false;
 		}
-
-		// Block Cmd+T, Cmd+1-9 from reaching the terminal
 		if (e.type === "keydown" && e.metaKey) {
-			if (e.key === "t" || (e.key >= "1" && e.key <= "9")) {
-				return false;
-			}
+			if (e.key === "t" || (e.key >= "1" && e.key <= "9")) return false;
 		}
-
 		return true;
 	});
 
-	term.onData((data) => {
-		window.shellApi.ptyWrite(sessionId, data);
-	});
+	term.onData((data) => { window.shellApi.ptyWrite(sessionId, data); });
 
-	// -- Clipboard events ------------------------------------------------------
-
+	// Clipboard events
 	const handleCopy = (event) => {
 		const selection = term.getSelection();
 		if (!selection) return;
@@ -328,7 +320,6 @@ export async function createTerminal(container, sessionId, options = {}) {
 		event.preventDefault();
 		event.stopImmediatePropagation();
 	};
-
 	const handlePaste = (event) => {
 		if (suppressPasteEvent) {
 			suppressPasteEvent = false;
@@ -342,28 +333,18 @@ export async function createTerminal(container, sessionId, options = {}) {
 		event.preventDefault();
 		event.stopImmediatePropagation();
 	};
-
 	container.addEventListener("copy", handleCopy, true);
 	container.addEventListener("paste", handlePaste, true);
+	cleanups.push(() => {
+		container.removeEventListener("copy", handleCopy, true);
+		container.removeEventListener("paste", handlePaste, true);
+	});
 
-	// -- Resize observer -------------------------------------------------------
-	// fit.fit() is expensive: it forces a synchronous DOM reflow, recalculates
-	// cols/rows, and triggers a full terminal re-layout + re-render.  During
-	// continuous tile-drag resizing this was called on every animation frame,
-	// which is the main cause of choppiness.
-	//
-	// Strategy: debounce fit() so it only fires once resize activity pauses
-	// (100ms).  The CSS transform resize remains smooth because tile-renderer
-	// handles that independently via GPU-composited translate3d/scale.
-
-	const FIT_DEBOUNCE_MS = 100;
-	let fitTimer = 0;
-
+	// Resize observer + fit
 	term.onResize(({ cols, rows }) => {
 		window.shellApi.ptyResize(sessionId, cols, rows);
 	});
-
-	const resizeObserver = new ResizeObserver((entries) => {
+	resizeObserver = new ResizeObserver((entries) => {
 		const { width, height } = entries[0].contentRect;
 		if (width > 0 && height > 0) {
 			clearTimeout(fitTimer);
@@ -371,57 +352,75 @@ export async function createTerminal(container, sessionId, options = {}) {
 		}
 	});
 	resizeObserver.observe(container);
+	cleanups.push(() => resizeObserver.disconnect());
 
-	// -- Theme change listener -------------------------------------------------
-
+	// Theme
 	const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-	const onThemeChange = () => {
-		term.options.theme = getTheme();
-	};
+	const onThemeChange = () => { term.options.theme = getTheme(); };
 	mediaQuery.addEventListener("change", onThemeChange);
+	cleanups.push(() => mediaQuery.removeEventListener("change", onThemeChange));
 
-	// -- Build handle ----------------------------------------------------------
+	// -- Terminal is now interactive -------------------------------------------
+	ready = true;
 
-	/** @type {TerminalHandle} */
-	const handle = {
-		sessionId,
-		write: writeBuffered,
-		focus: () => term.focus(),
-		blur: () => term.blur(),
-		term,
-		dispose() {
-			if (flushTimer !== undefined) {
-				clearTimeout(flushTimer);
-				flushData();
-			}
-			clearTimeout(fitTimer);
-			mediaQuery.removeEventListener("change", onThemeChange);
-			resizeObserver.disconnect();
-			container.removeEventListener("wheel", handleWheel);
-			container.removeEventListener("copy", handleCopy, true);
-			container.removeEventListener("paste", handlePaste, true);
-			if (webglAddon) {
-				webglAddon.dispose();
+	// Flush data that arrived during init and run deferred fit
+	if (dataBuffer.length > 0) {
+		flushTimer = window.setTimeout(flushData, DATA_BUFFER_FLUSH_MS);
+	}
+	requestAnimationFrame(() => {
+		if (!disposed && fit) fit.fit();
+	});
+
+	if (pendingFocus && term) {
+		term.focus();
+		pendingFocus = false;
+	}
+
+	// =========================================================================
+	// Phase 3 (next frame): WebGL addon — heaviest GPU init, fully deferred
+	// =========================================================================
+
+	lap("phase 2 done (ready=true)");
+	await nextFrame();
+	if (disposed) return handle;
+	lap("phase 3 start: WebGL addon");
+
+	if (useGpuRenderer) {
+		if (window.devicePixelRatio <= 1) {
+			term.options.devicePixelRatio = 2;
+		}
+		try {
+			webglAddon = new WebglAddon();
+			webglAddon.onContextLoss(() => {
+				console.warn("[terminal-embed] WebGL context lost, falling back to DOM renderer");
+				webglAddon?.dispose();
 				webglAddon = null;
-			}
-			term.dispose();
-			registry.delete(sessionId);
-			earlyDataBuffers.delete(sessionId);
-			setTerminalCount(registry.size);
-		},
-	};
+			});
+			term.loadAddon(webglAddon);
+			console.log("[terminal-embed] WebGL renderer loaded");
 
-	registry.set(sessionId, handle);
-	setTerminalCount(registry.size);
-
-	// Flush any PTY data that arrived before the terminal was registered
-	const early = earlyDataBuffers.get(sessionId);
-	if (early) {
-		earlyDataBuffers.delete(sessionId);
-		for (const chunk of early.chunks) {
-			handle.write(chunk);
+			requestAnimationFrame(() => {
+				try {
+					const glCtx = webglAddon?._renderer?._gl;
+					if (glCtx) attachGL(glCtx);
+				} catch { /* non-fatal */ }
+			});
+		} catch (err) {
+			console.warn("[terminal-embed] WebGL addon failed, using DOM fallback:", err);
+			webglAddon = null;
 		}
 	}
+
+	// =========================================================================
+	// Phase 4 (idle): grow scrollback to full capacity
+	// =========================================================================
+
+	lap("phase 3 done");
+	setTimeout(() => {
+		if (!disposed && term) {
+			try { term.options.scrollback = FULL_SCROLLBACK; } catch { /* disposed */ }
+		}
+	}, SCROLLBACK_GROW_DELAY_MS);
 
 	return handle;
 }

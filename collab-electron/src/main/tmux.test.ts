@@ -22,6 +22,7 @@ import {
   discoverSessions,
   cleanDetachedSessions,
   verifyTmuxAvailable,
+  setShuttingDown,
 } from "./pty";
 
 // Force tmux mode for these tests — the default is now "sidecar"
@@ -220,7 +221,8 @@ describe("cleanDetachedSessions", () => {
     const { sessionId: keep, target } = keepSession;
     const { sessionId: detached } = detachedSession;
     killAll(); // detach clients, tmux sessions survive
-    await Bun.sleep(100);
+    setShuttingDown(false);
+    await Bun.sleep(500); // WSL tmux needs time to notice client disconnect
 
     await cleanDetachedSessions([keep]);
 

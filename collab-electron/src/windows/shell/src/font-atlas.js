@@ -181,6 +181,21 @@ class FontAtlas {
     this._nextSlot = 0;
 
     /**
+     * Number of slots consumed by pre-warmed ASCII glyphs.
+     * Set by _prewarmASCII(); used by _evictNonASCII() to preserve ASCII.
+     * @type {number}
+     * @private
+     */
+    this._asciiSlotCount = 0;
+
+    /**
+     * Number of times non-ASCII eviction has fired (for log rate-limiting).
+     * @type {number}
+     * @private
+     */
+    this._evictionCount = 0;
+
+    /**
      * Current atlas width in device pixels (always power-of-2).
      * @type {number}
      */

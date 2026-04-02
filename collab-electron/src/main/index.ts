@@ -67,7 +67,10 @@ process.on("uncaughtException", (error) => {
   // queue and the execution the resize throws — but there is no way to wrap
   // this in a try/catch from userland.  Swallow it instead of logging a
   // scary "[crash]" line for every dead terminal.
-  if (error.message === "Cannot resize a pty that has already exited") return;
+  if (error.message === "Cannot resize a pty that has already exited") {
+    trackEvent("pty_resize_after_exit");
+    return;
+  }
 
   trackEvent("app_crash", {
     type: "uncaughtException",
@@ -651,7 +654,10 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:read-meta",
-  (_event, sessionId: string) => readSessionMeta(sessionId),
+  (event, sessionId: string) => {
+    if (!pty.isSessionOwner(sessionId, event.sender.id)) return null;
+    return readSessionMeta(sessionId);
+  },
 );
 
 ipcMain.handle(
@@ -662,16 +668,24 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:foreground-process",
-  (_event, sessionId: string) => pty.getForegroundProcess(sessionId),
+  (event, sessionId: string) => {
+    if (!pty.isSessionOwner(sessionId, event.sender.id)) return null;
+    return pty.getForegroundProcess(sessionId);
+  },
 );
-
 
 ipcMain.handle(
   "pty:capture",
   (
-    _event,
+    event,
     { sessionId, lines }: { sessionId: string; lines?: number },
-  ) => pty.captureSession(sessionId, lines),
+  ) => {
+    if (!pty.isSessionOwner(sessionId, event.sender.id)) return "";
+    const safeLines = typeof lines === "number"
+      ? Math.max(1, Math.min(lines, 10000))
+      : undefined;
+    return pty.captureSession(sessionId, safeLines);
+  },
 );
 
 ipcMain.handle(

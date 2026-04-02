@@ -209,35 +209,22 @@ async function ensureTmuxSessionAppearance(
   target: TerminalTarget | undefined,
   sessionName: string,
 ): Promise<void> {
+  // Batch all appearance options into a single tmux invocation using the
+  // command separator (;) so we only cross the Win32→WSL boundary once
+  // instead of 2-3 times (~200-400ms saved on cold WSL).
+  // Note: execFile passes args directly (no shell), so use literal ";"
+  // rather than the shell-escaped "\;".
+  const cmds: string[] = [];
   if (process.platform === "win32" && target?.startsWith("wsl:")) {
-    try {
-      await tmuxExecAsync(
-        target,
-        "set-option",
-        "-g",
-        "default-terminal",
-        "screen-256color",
-      );
-      await tmuxExecAsync(
-        target,
-        "set-option",
-        "-ga",
-        "terminal-overrides",
-        ",screen-256color:Tc:smcup@:rmcup@",
-      );
-    } catch {
-      // Best effort. If this fails, the session is still usable.
-    }
-  }
-  try {
-    await tmuxExecAsync(
-      target,
-      "set-option",
-      "-t",
-      sessionName,
-      "status",
-      "off",
+    cmds.push(
+      "set-option", "-g", "default-terminal", "screen-256color", ";",
+      "set-option", "-ga", "terminal-overrides",
+      ",screen-256color:Tc:smcup@:rmcup@", ";",
     );
+  }
+  cmds.push("set-option", "-t", sessionName, "status", "off");
+  try {
+    await tmuxExecAsync(target, ...cmds);
   } catch {
     // Best effort. If this fails, the session is still usable.
   }
@@ -393,6 +380,8 @@ async function doEnsureSidecar(): Promise<void> {
         };
         dataSockets.get(sessionId)?.destroy();
         dataSockets.delete(sessionId);
+        sidecarSessionIds.delete(sessionId);
+        sessionOwners.delete(sessionId);
         deleteSessionMeta(sessionId);
         sendToMainWindow("pty:exit", { sessionId, exitCode });
       }
@@ -655,11 +644,16 @@ export async function createSession(
     );
 
     try {
-      await tmuxExecAsync(undefined, "set-environment", "-t", name, "COLLAB_PTY_SESSION_ID", sessionId);
+      const envTasks: Promise<unknown>[] = [
+        tmuxExecAsync(undefined, "set-environment", "-t", name, "COLLAB_PTY_SESSION_ID", sessionId),
+        tmuxExecAsync(undefined, "set-environment", "-t", name, "SHELL", shell),
+      ];
       if (tileId) {
-        await tmuxExecAsync(undefined, "set-environment", "-t", name, "COLLAB_TILE_ID", tileId);
+        envTasks.push(
+          tmuxExecAsync(undefined, "set-environment", "-t", name, "COLLAB_TILE_ID", tileId),
+        );
       }
-      await tmuxExecAsync(undefined, "set-environment", "-t", name, "SHELL", shell);
+      await Promise.all(envTasks);
     } catch {
       // Under WSL, the tmux server may not have registered the session yet.
       // The terminal will still work — these env vars are nice-to-have.
@@ -714,26 +708,27 @@ export async function createSession(
       "-y", String(r),
     );
 
-    await tmuxExecAsync(
-      tmuxTarget,
-      "set-environment",
-      "-t",
-      name,
-      "COLLAB_PTY_SESSION_ID",
-      sessionId,
-    );
-
-    if (!(process.platform === "win32" && tmuxTarget.startsWith("wsl:"))) {
-      await tmuxExecAsync(
+    // Run set-environment and appearance setup in parallel — they are
+    // independent post-creation steps.  On WSL each tmuxExecAsync spawns
+    // a wsl.exe process (~150-300ms), so parallelising saves 1-2 round trips.
+    const postCreateTasks: Promise<unknown>[] = [
+      tmuxExecAsync(
         tmuxTarget,
-        "set-environment",
-        "-t",
-        name,
-        "SHELL",
-        shell,
+        "set-environment", "-t", name,
+        "COLLAB_PTY_SESSION_ID", sessionId,
+      ),
+      ensureTmuxSessionAppearance(tmuxTarget, name),
+    ];
+    if (!(process.platform === "win32" && tmuxTarget.startsWith("wsl:"))) {
+      postCreateTasks.push(
+        tmuxExecAsync(
+          tmuxTarget,
+          "set-environment", "-t", name,
+          "SHELL", shell,
+        ),
       );
     }
-    await ensureTmuxSessionAppearance(tmuxTarget, name);
+    await Promise.all(postCreateTasks);
 
     attachClient(sessionId, c, r, senderWebContentsId, tmuxTarget);
     const _owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
@@ -982,20 +977,20 @@ export async function reconnectSession(
     // Proceed without scrollback
   }
 
-  await ensureTmuxSessionAppearance(target, name);
-  attachClient(sessionId, cols, rows, senderWebContentsId, target);
-  const owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
-  if (owner != null) sessionOwners.set(sessionId, owner);
-
-  try {
-    await tmuxExecAsync(
+  // Run appearance setup and resize in parallel — both are independent
+  // post-reconnect steps. attachClient is synchronous (spawns the pty).
+  const reconnectTasks: Promise<unknown>[] = [
+    ensureTmuxSessionAppearance(target, name),
+    tmuxExecAsync(
       target,
       "resize-window", "-t", name,
       "-x", String(cols), "-y", String(rows),
-    );
-  } catch {
-    // Non-fatal
-  }
+    ).catch(() => { /* non-fatal */ }),
+  ];
+  attachClient(sessionId, cols, rows, senderWebContentsId, target);
+  const owner = getEffectiveSender(senderWebContentsId) ?? senderWebContentsId;
+  if (owner != null) sessionOwners.set(sessionId, owner);
+  await Promise.all(reconnectTasks);
 
   const session = sessions.get(sessionId)!;
   session.shell =
@@ -1122,6 +1117,7 @@ export async function killSession(
       // Session may already be dead
     }
     sidecarSessionIds.delete(sessionId);
+    sessionOwners.delete(sessionId);
     deleteSessionMeta(sessionId);
     return;
   }

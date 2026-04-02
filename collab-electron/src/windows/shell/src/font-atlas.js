@@ -294,6 +294,49 @@ class FontAtlas {
         this._rasterize(cp, flags);
       }
     }
+    // Record how many slots the pre-warmed ASCII glyphs consume.
+    // These are never evicted.
+    this._asciiSlotCount = this._nextSlot;
+  }
+
+  /**
+   * Evict all non-ASCII glyphs from the atlas, freeing their slots for
+   * re-use.  ASCII glyphs (pre-warmed during construction) are preserved.
+   *
+   * This is a generational eviction: everything beyond the ASCII region
+   * is discarded at once.  Frequently-used non-ASCII glyphs will be
+   * re-rasterized on the next `getGlyph` call.
+   *
+   * @returns {boolean} true if any glyphs were evicted.
+   * @private
+   */
+  _evictNonASCII() {
+    let evicted = 0;
+    for (const [key] of this._glyphs) {
+      const codepoint = key >> 1;
+      if (codepoint < ASCII_START || codepoint > ASCII_END) {
+        this._glyphs.delete(key);
+        evicted++;
+      }
+    }
+    if (evicted === 0) return false;
+
+    // Reset the slot pointer to right after the ASCII region.
+    this._nextSlot = this._asciiSlotCount;
+
+    // Clear the non-ASCII area of the canvas (fill with black).
+    const padW = this.cellWidth + GLYPH_PAD;
+    const padH = this.cellHeight + GLYPH_PAD;
+    const asciiRow = Math.ceil(this._asciiSlotCount / this._cols);
+    const clearY = asciiRow * padH;
+    if (clearY < this.atlasHeight) {
+      this._ctx.fillStyle = "#000000";
+      this._ctx.fillRect(0, clearY, this.atlasWidth, this.atlasHeight - clearY);
+    }
+
+    this._dirty = true;
+    console.warn(`[font-atlas] Evicted ${evicted} non-ASCII glyphs (atlas full at ${this.atlasWidth}x${this.atlasHeight})`);
+    return true;
   }
 
   // -----------------------------------------------------------------------
@@ -377,7 +420,11 @@ class FontAtlas {
 
     // Ensure we have room.
     while (this._nextSlot + slotsNeeded > this._cols * this._rows) {
-      if (!this._grow()) return null; // atlas at max size
+      if (!this._grow()) {
+        // Atlas at max size — evict non-ASCII glyphs and reuse their slots.
+        if (!this._evictNonASCII()) return null;
+        break;
+      }
     }
 
     const slot = this._nextSlot;

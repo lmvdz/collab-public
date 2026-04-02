@@ -207,14 +207,6 @@ function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: Ter
 		};
 		window.api.onPtyData(sessionId, handleData);
 
-		// DEBUG: watchdog to detect missing PTY data
-		const dataWatchdog = window.setTimeout(() => {
-			if (firstData) {
-				term.write(`\r\n\x1b[33m[debug] No PTY data after 3 s — session ${sessionId}\x1b[0m\r\n`);
-				term.write(`\x1b[33m[debug] Check main-process console for [pty:] logs\x1b[0m\r\n`);
-			}
-		}, 3000);
-
 		term.onResize(({ cols, rows }) => {
 			window.api.ptyResize(sessionId, cols, rows);
 		});
@@ -270,7 +262,6 @@ function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: Ter
 		mediaQuery.addEventListener("change", onThemeChange);
 
 		return () => {
-			clearTimeout(dataWatchdog);
 			if (flushTimer !== undefined) {
 				clearTimeout(flushTimer);
 				flushData();

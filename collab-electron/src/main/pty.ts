@@ -95,7 +95,6 @@ function getEffectiveSender(senderWebContentsId?: number): number | undefined {
   if (inProc && shellWebContentsId != null) {
     return shellWebContentsId;
   }
-  console.log(`[pty:route] inProcess=${inProc}, shell=${shellWebContentsId}, sender=${senderWebContentsId} → using sender`);
   return senderWebContentsId;
 }
 
@@ -226,27 +225,17 @@ function getWebContents(): typeof import("electron").webContents | null {
   }
 }
 
-let _sendLogCount = 0;
-
 function sendToSender(
   senderWebContentsId: number | undefined,
   channel: string,
   payload: unknown,
 ): void {
-  if (senderWebContentsId == null) {
-    if (channel === "pty:data" && _sendLogCount++ < 3) console.warn("[pty:send] sender is null");
-    return;
-  }
+  if (senderWebContentsId == null) return;
   const wc = getWebContents();
-  if (!wc) {
-    if (channel === "pty:data" && _sendLogCount++ < 3) console.warn("[pty:send] webContents module unavailable");
-    return;
-  }
+  if (!wc) return;
   const sender = wc.fromId(senderWebContentsId);
   if (sender && !sender.isDestroyed()) {
     sender.send(channel, payload);
-  } else if (channel === "pty:data" && _sendLogCount++ < 3) {
-    console.warn(`[pty:send] webContents id=${senderWebContentsId} not found or destroyed`);
   }
 }
 
@@ -485,12 +474,8 @@ function attachClient(
 
   const disposables: IDisposable[] = [];
 
-  let _attachDataCount = 0;
   disposables.push(
     ptyProcess.onData((data: string) => {
-      if (_attachDataCount++ < 3) {
-        console.log(`[pty:attach] sessionId=${sessionId} data event #${_attachDataCount}, effectiveSender=${effectiveSender}, bytes=${data.length}`);
-      }
       sendToSender(
         effectiveSender,
         "pty:data",
@@ -502,7 +487,6 @@ function attachClient(
 
   disposables.push(
     ptyProcess.onExit(() => {
-      console.log(`[pty:attach] sessionId=${sessionId} exited, effectiveSender=${effectiveSender}`);
       if (shuttingDown) {
         sessions.delete(sessionId);
         return;
@@ -713,13 +697,6 @@ export async function createSession(
 
     attachClient(sessionId, c, r, senderWebContentsId, tmuxTarget);
 
-    // DEBUG: inject a test message directly to verify the IPC channel works
-    sendToSender(
-      getEffectiveSender(senderWebContentsId),
-      "pty:data",
-      { sessionId, data: "\r\n[DEBUG] main→webview channel OK\r\n" },
-    );
-
     writeSessionMeta(
       sessionId,
       resolvedTargetMeta(
@@ -754,13 +731,6 @@ export async function createSession(
       c,
       r,
       senderWebContentsId,
-    );
-
-    // DEBUG: inject a test message directly to verify the IPC channel works
-    sendToSender(
-      getEffectiveSender(senderWebContentsId),
-      "pty:data",
-      { sessionId, data: "\r\n[DEBUG] main→webview channel OK (direct)\r\n" },
     );
 
     writeSessionMeta(

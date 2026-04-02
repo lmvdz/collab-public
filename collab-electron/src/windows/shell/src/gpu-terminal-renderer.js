@@ -48,6 +48,10 @@ const CellFlags = {
 	INVERSE:       16,
 };
 
+/** Default-color flag bits (set by XtermAdapter when cell uses theme default) */
+const FLAG_FG_DEFAULT = 0x20;
+const FLAG_BG_DEFAULT = 0x40;
+
 /** Default blink interval in ms */
 const BLINK_INTERVAL_MS = 530;
 
@@ -303,6 +307,330 @@ function createProgram(gl, vsSrc, fsSrc) {
 	return linkProgram(gl, vs, fs);
 }
 
+/**
+ * Configure a VAO for instanced rendering with N float attributes per instance.
+ * Each attribute is a single float at its own location.
+ * @param {WebGL2RenderingContext} gl
+ * @param {WebGLVertexArrayObject} vao
+ * @param {WebGLBuffer} buffer
+ * @param {number} floatsPerInstance
+ */
+function _setupInstanceVAO(gl, vao, buffer, floatsPerInstance) {
+	gl.bindVertexArray(vao);
+	gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+	const stride = floatsPerInstance * 4;
+	for (let i = 0; i < floatsPerInstance; i++) {
+		gl.enableVertexAttribArray(i);
+		gl.vertexAttribPointer(i, 1, gl.FLOAT, false, stride, i * 4);
+		gl.vertexAttribDivisor(i, 1);
+	}
+
+	gl.bindVertexArray(null);
+}
+
+// ---------------------------------------------------------------------------
+// SharedGPUResources
+// ---------------------------------------------------------------------------
+
+/**
+ * Holds compiled shader programs, cached uniform locations, and the shared
+ * font atlas texture. One instance can drive multiple TerminalDrawState
+ * objects via drawTerminal().
+ *
+ * @param {WebGL2RenderingContext} gl - externally owned GL context
+ */
+export class SharedGPUResources {
+	/**
+	 * @param {WebGL2RenderingContext} gl
+	 */
+	constructor(gl) {
+		/** @type {WebGL2RenderingContext} */
+		this._gl = gl;
+
+		// -- Background pass --
+		this._bgProgram = createProgram(gl, BG_VERTEX_SRC, BG_FRAGMENT_SRC);
+		this._bgUCellSize = gl.getUniformLocation(this._bgProgram, "uCellSize");
+		this._bgUGridOrigin = gl.getUniformLocation(this._bgProgram, "uGridOrigin");
+
+		// -- Selection pass --
+		this._selProgram = createProgram(gl, SEL_VERTEX_SRC, SEL_FRAGMENT_SRC);
+		this._selUCellSize = gl.getUniformLocation(this._selProgram, "uCellSize");
+		this._selUGridOrigin = gl.getUniformLocation(this._selProgram, "uGridOrigin");
+
+		// -- Foreground (glyph) pass --
+		this._fgProgram = createProgram(gl, FG_VERTEX_SRC, FG_FRAGMENT_SRC);
+		this._fgUCellSize = gl.getUniformLocation(this._fgProgram, "uCellSize");
+		this._fgUGridOrigin = gl.getUniformLocation(this._fgProgram, "uGridOrigin");
+		this._fgUAtlas = gl.getUniformLocation(this._fgProgram, "uAtlas");
+
+		// -- Cursor pass --
+		this._cursorProgram = createProgram(gl, CURSOR_VERTEX_SRC, CURSOR_FRAGMENT_SRC);
+		this._cursorUCellSize = gl.getUniformLocation(this._cursorProgram, "uCellSize");
+		this._cursorUGridOrigin = gl.getUniformLocation(this._cursorProgram, "uGridOrigin");
+
+		// Atlas texture
+		this._atlasTexture = gl.createTexture();
+	}
+
+	/**
+	 * Upload the font atlas canvas data to the GPU texture.
+	 * @param {FontAtlas} fontAtlas
+	 */
+	uploadAtlas(fontAtlas) {
+		const gl = this._gl;
+		gl.bindTexture(gl.TEXTURE_2D, this._atlasTexture);
+		gl.texImage2D(
+			gl.TEXTURE_2D, 0, gl.RGBA,
+			gl.RGBA, gl.UNSIGNED_BYTE,
+			fontAtlas.getCanvasSource(),
+		);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	}
+
+	/**
+	 * Perform the 4-pass instanced draw for a single terminal.
+	 *
+	 * Does NOT bind/unbind FBOs — that is the caller's responsibility.
+	 *
+	 * @param {TerminalDrawState} drawState
+	 * @param {{ bgColor: { r: number, g: number, b: number }, cols: number, rows: number, drawCursor: boolean }} options
+	 */
+	drawTerminal(drawState, options) {
+		const gl = this._gl;
+		const { bgColor, cols, rows, drawCursor } = options;
+
+		const cellSizeX = 1.0 / cols;
+		const cellSizeY = 1.0 / rows;
+
+		gl.clearColor(bgColor.r, bgColor.g, bgColor.b, 1.0);
+		gl.clear(gl.COLOR_BUFFER_BIT);
+
+		// Pass 1: Backgrounds
+		if (drawState.bgCount > 0) {
+			gl.useProgram(this._bgProgram);
+			gl.uniform2f(this._bgUCellSize, cellSizeX, cellSizeY);
+			gl.uniform2f(this._bgUGridOrigin, 0, 0);
+			gl.bindVertexArray(drawState.bgVAO);
+			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, drawState.bgCount);
+		}
+
+		// Pass 2: Selection overlay
+		if (drawState.selCount > 0) {
+			gl.enable(gl.BLEND);
+			gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+			gl.useProgram(this._selProgram);
+			gl.uniform2f(this._selUCellSize, cellSizeX, cellSizeY);
+			gl.uniform2f(this._selUGridOrigin, 0, 0);
+			gl.bindVertexArray(drawState.selVAO);
+			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, drawState.selCount);
+			gl.disable(gl.BLEND);
+		}
+
+		// Pass 3: Glyphs
+		if (drawState.fgCount > 0) {
+			gl.enable(gl.BLEND);
+			gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+			gl.useProgram(this._fgProgram);
+			gl.uniform2f(this._fgUCellSize, cellSizeX, cellSizeY);
+			gl.uniform2f(this._fgUGridOrigin, 0, 0);
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, this._atlasTexture);
+			gl.uniform1i(this._fgUAtlas, 0);
+			gl.bindVertexArray(drawState.fgVAO);
+			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, drawState.fgCount);
+			gl.disable(gl.BLEND);
+		}
+
+		// Pass 4: Cursor
+		if (drawCursor) {
+			gl.enable(gl.BLEND);
+			gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+			gl.useProgram(this._cursorProgram);
+			gl.uniform2f(this._cursorUCellSize, cellSizeX, cellSizeY);
+			gl.uniform2f(this._cursorUGridOrigin, 0, 0);
+			gl.bindVertexArray(drawState.cursorVAO);
+			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 1);
+			gl.disable(gl.BLEND);
+		}
+
+		gl.bindVertexArray(null);
+	}
+
+	/**
+	 * Release all GPU resources owned by this instance.
+	 */
+	dispose() {
+		const gl = this._gl;
+
+		gl.deleteProgram(this._bgProgram);
+		gl.deleteProgram(this._selProgram);
+		gl.deleteProgram(this._fgProgram);
+		gl.deleteProgram(this._cursorProgram);
+
+		gl.deleteTexture(this._atlasTexture);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TerminalDrawState
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-terminal instance data: VAOs, instance buffers, and Float32Array
+ * backing stores for the 4 rendering passes.
+ *
+ * @param {WebGL2RenderingContext} gl - externally owned GL context
+ * @param {number} cols - initial grid columns
+ * @param {number} rows - initial grid rows
+ */
+export class TerminalDrawState {
+	/**
+	 * @param {WebGL2RenderingContext} gl
+	 * @param {number} cols
+	 * @param {number} rows
+	 */
+	constructor(gl, cols, rows) {
+		/** @type {WebGL2RenderingContext} */
+		this._gl = gl;
+
+		// Create VAOs and buffers for each pass
+		/** @type {WebGLVertexArrayObject} */
+		this.bgVAO = gl.createVertexArray();
+		/** @type {WebGLBuffer} */
+		this.bgInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.bgVAO, this.bgInstanceBuf, BG_FLOATS_PER_INSTANCE);
+
+		/** @type {WebGLVertexArrayObject} */
+		this.selVAO = gl.createVertexArray();
+		/** @type {WebGLBuffer} */
+		this.selInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.selVAO, this.selInstanceBuf, SEL_FLOATS_PER_INSTANCE);
+
+		/** @type {WebGLVertexArrayObject} */
+		this.fgVAO = gl.createVertexArray();
+		/** @type {WebGLBuffer} */
+		this.fgInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.fgVAO, this.fgInstanceBuf, FG_FLOATS_PER_INSTANCE);
+
+		/** @type {WebGLVertexArrayObject} */
+		this.cursorVAO = gl.createVertexArray();
+		/** @type {WebGLBuffer} */
+		this.cursorInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.cursorVAO, this.cursorInstanceBuf, CURSOR_FLOATS_PER_INSTANCE);
+
+		// Allocate typed arrays
+		this.bgData = null;
+		this.fgData = null;
+		this.selData = null;
+		this.cursorData = null;
+		this.rowBgOffsets = null;
+		this.rowFgOffsets = null;
+		this.bgCount = 0;
+		this.fgCount = 0;
+		this.selCount = 0;
+		this.needsFullPack = true;
+
+		this._allocateArrays(cols, rows);
+	}
+
+	/**
+	 * Allocate (or reallocate) typed arrays for the given grid dimensions.
+	 * @param {number} cols
+	 * @param {number} rows
+	 */
+	_allocateArrays(cols, rows) {
+		const totalCells = cols * rows;
+
+		this.bgData = new Float32Array(totalCells * BG_FLOATS_PER_INSTANCE);
+		this.selData = new Float32Array(totalCells * SEL_FLOATS_PER_INSTANCE);
+		this.fgData = new Float32Array(totalCells * FG_FLOATS_PER_INSTANCE);
+		this.cursorData = new Float32Array(CURSOR_FLOATS_PER_INSTANCE);
+
+		this.rowBgOffsets = new Uint32Array(rows);
+		this.rowFgOffsets = new Uint32Array(rows);
+
+		this.bgCount = 0;
+		this.fgCount = 0;
+		this.selCount = 0;
+
+		this.needsFullPack = true;
+	}
+
+	/**
+	 * Resize to new grid dimensions — reallocates buffers and VAOs.
+	 * @param {number} cols
+	 * @param {number} rows
+	 */
+	resize(cols, rows) {
+		const gl = this._gl;
+
+		// Delete old VAOs and buffers, create fresh ones
+		gl.deleteVertexArray(this.bgVAO);
+		gl.deleteVertexArray(this.selVAO);
+		gl.deleteVertexArray(this.fgVAO);
+		gl.deleteVertexArray(this.cursorVAO);
+		gl.deleteBuffer(this.bgInstanceBuf);
+		gl.deleteBuffer(this.selInstanceBuf);
+		gl.deleteBuffer(this.fgInstanceBuf);
+		gl.deleteBuffer(this.cursorInstanceBuf);
+
+		this.bgVAO = gl.createVertexArray();
+		this.bgInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.bgVAO, this.bgInstanceBuf, BG_FLOATS_PER_INSTANCE);
+
+		this.selVAO = gl.createVertexArray();
+		this.selInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.selVAO, this.selInstanceBuf, SEL_FLOATS_PER_INSTANCE);
+
+		this.fgVAO = gl.createVertexArray();
+		this.fgInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.fgVAO, this.fgInstanceBuf, FG_FLOATS_PER_INSTANCE);
+
+		this.cursorVAO = gl.createVertexArray();
+		this.cursorInstanceBuf = gl.createBuffer();
+		_setupInstanceVAO(gl, this.cursorVAO, this.cursorInstanceBuf, CURSOR_FLOATS_PER_INSTANCE);
+
+		this._allocateArrays(cols, rows);
+
+		// Pre-allocate GPU buffer storage so draw calls never hit empty buffers
+		gl.bindBuffer(gl.ARRAY_BUFFER, this.bgInstanceBuf);
+		gl.bufferData(gl.ARRAY_BUFFER, this.bgData, gl.DYNAMIC_DRAW);
+		gl.bindBuffer(gl.ARRAY_BUFFER, this.selInstanceBuf);
+		gl.bufferData(gl.ARRAY_BUFFER, this.selData, gl.DYNAMIC_DRAW);
+		gl.bindBuffer(gl.ARRAY_BUFFER, this.fgInstanceBuf);
+		gl.bufferData(gl.ARRAY_BUFFER, this.fgData, gl.DYNAMIC_DRAW);
+		gl.bindBuffer(gl.ARRAY_BUFFER, this.cursorInstanceBuf);
+		gl.bufferData(gl.ARRAY_BUFFER, this.cursorData, gl.DYNAMIC_DRAW);
+		gl.bindBuffer(gl.ARRAY_BUFFER, null);
+	}
+
+	/**
+	 * Release all GPU resources (VAOs and buffers).
+	 */
+	dispose() {
+		const gl = this._gl;
+
+		gl.deleteVertexArray(this.bgVAO);
+		gl.deleteVertexArray(this.selVAO);
+		gl.deleteVertexArray(this.fgVAO);
+		gl.deleteVertexArray(this.cursorVAO);
+
+		gl.deleteBuffer(this.bgInstanceBuf);
+		gl.deleteBuffer(this.selInstanceBuf);
+		gl.deleteBuffer(this.fgInstanceBuf);
+		gl.deleteBuffer(this.cursorInstanceBuf);
+
+		this.bgData = null;
+		this.fgData = null;
+		this.selData = null;
+		this.cursorData = null;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // WebGL2TerminalRenderer
 // ---------------------------------------------------------------------------
@@ -486,81 +814,18 @@ export default class WebGL2TerminalRenderer {
 	_initGL() {
 		const gl = this._gl;
 
-		// -- Background pass --
-		this._bgProgram = createProgram(gl, BG_VERTEX_SRC, BG_FRAGMENT_SRC);
-		this._bgVAO = gl.createVertexArray();
-		this._bgInstanceBuf = gl.createBuffer();
-		this._setupInstanceVAO(gl, this._bgVAO, this._bgInstanceBuf, BG_FLOATS_PER_INSTANCE);
-		this._bgUCellSize = gl.getUniformLocation(this._bgProgram, "uCellSize");
-		this._bgUGridOrigin = gl.getUniformLocation(this._bgProgram, "uGridOrigin");
-
-		// -- Selection pass --
-		this._selProgram = createProgram(gl, SEL_VERTEX_SRC, SEL_FRAGMENT_SRC);
-		this._selVAO = gl.createVertexArray();
-		this._selInstanceBuf = gl.createBuffer();
-		this._setupInstanceVAO(gl, this._selVAO, this._selInstanceBuf, SEL_FLOATS_PER_INSTANCE);
-		this._selUCellSize = gl.getUniformLocation(this._selProgram, "uCellSize");
-		this._selUGridOrigin = gl.getUniformLocation(this._selProgram, "uGridOrigin");
-
-		// -- Foreground (glyph) pass --
-		this._fgProgram = createProgram(gl, FG_VERTEX_SRC, FG_FRAGMENT_SRC);
-		this._fgVAO = gl.createVertexArray();
-		this._fgInstanceBuf = gl.createBuffer();
-		this._setupInstanceVAO(gl, this._fgVAO, this._fgInstanceBuf, FG_FLOATS_PER_INSTANCE);
-		this._fgUCellSize = gl.getUniformLocation(this._fgProgram, "uCellSize");
-		this._fgUGridOrigin = gl.getUniformLocation(this._fgProgram, "uGridOrigin");
-		this._fgUAtlas = gl.getUniformLocation(this._fgProgram, "uAtlas");
-
-		// -- Cursor pass --
-		this._cursorProgram = createProgram(gl, CURSOR_VERTEX_SRC, CURSOR_FRAGMENT_SRC);
-		this._cursorVAO = gl.createVertexArray();
-		this._cursorInstanceBuf = gl.createBuffer();
-		this._setupInstanceVAO(gl, this._cursorVAO, this._cursorInstanceBuf, CURSOR_FLOATS_PER_INSTANCE);
-		this._cursorUCellSize = gl.getUniformLocation(this._cursorProgram, "uCellSize");
-		this._cursorUGridOrigin = gl.getUniformLocation(this._cursorProgram, "uGridOrigin");
+		// Create shared GPU resources (programs, uniforms, atlas texture)
+		this._sharedResources = new SharedGPUResources(gl);
 
 		// Upload atlas texture
-		this._atlasTexture = gl.createTexture();
-		this._uploadAtlasTexture();
-	}
-
-	/**
-	 * Configure a VAO for instanced rendering with N float attributes per instance.
-	 * Each attribute is a single float at its own location.
-	 * @param {WebGL2RenderingContext} gl
-	 * @param {WebGLVertexArrayObject} vao
-	 * @param {WebGLBuffer} buffer
-	 * @param {number} floatsPerInstance
-	 */
-	_setupInstanceVAO(gl, vao, buffer, floatsPerInstance) {
-		gl.bindVertexArray(vao);
-		gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-
-		const stride = floatsPerInstance * 4;
-		for (let i = 0; i < floatsPerInstance; i++) {
-			gl.enableVertexAttribArray(i);
-			gl.vertexAttribPointer(i, 1, gl.FLOAT, false, stride, i * 4);
-			gl.vertexAttribDivisor(i, 1);
-		}
-
-		gl.bindVertexArray(null);
+		this._sharedResources.uploadAtlas(this._atlas);
 	}
 
 	/**
 	 * Upload the font atlas canvas data to the GPU texture.
 	 */
 	_uploadAtlasTexture() {
-		const gl = this._gl;
-		gl.bindTexture(gl.TEXTURE_2D, this._atlasTexture);
-		gl.texImage2D(
-			gl.TEXTURE_2D, 0, gl.RGBA,
-			gl.RGBA, gl.UNSIGNED_BYTE,
-			this._atlas.getCanvasSource(),
-		);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+		this._sharedResources.uploadAtlas(this._atlas);
 	}
 
 	// -----------------------------------------------------------------------
@@ -574,30 +839,22 @@ export default class WebGL2TerminalRenderer {
 	 * @param {number} rows
 	 */
 	_allocateBuffers(cols, rows) {
-		const totalCells = cols * rows;
+		const gl = this._gl;
 
-		// Background: every cell gets a bg instance
-		this._bgData = new Float32Array(totalCells * BG_FLOATS_PER_INSTANCE);
+		if (this._drawState) {
+			this._drawState.dispose();
+		}
 
-		// Selection: worst case every cell selected
-		this._selData = new Float32Array(totalCells * SEL_FLOATS_PER_INSTANCE);
+		this._drawState = new TerminalDrawState(gl, cols, rows);
 
-		// Foreground: every cell could have a glyph
-		this._fgData = new Float32Array(totalCells * FG_FLOATS_PER_INSTANCE);
-
-		// Cursor: just 1 instance
-		this._cursorData = new Float32Array(CURSOR_FLOATS_PER_INSTANCE);
-
-		// Per-row dirty tracking: offsets into bg/fg arrays for partial updates
-		this._rowBgOffsets = new Uint32Array(rows);
-		this._rowFgOffsets = new Uint32Array(rows);
-
-		// Instance counts
-		this._bgCount = 0;
-		this._fgCount = 0;
-		this._selCount = 0;
-
-		// Full re-pack needed after allocation
+		// Alias draw state arrays onto the renderer for backward compat
+		// with _packRow, _packSelection, _packCursor, _repackAllFg
+		this._bgData = this._drawState.bgData;
+		this._fgData = this._drawState.fgData;
+		this._selData = this._drawState.selData;
+		this._cursorData = this._drawState.cursorData;
+		this._rowBgOffsets = this._drawState.rowBgOffsets;
+		this._rowFgOffsets = this._drawState.rowFgOffsets;
 		this._needsFullPack = true;
 	}
 
@@ -648,20 +905,6 @@ export default class WebGL2TerminalRenderer {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Resolve a cell color channel triplet to normalized RGB, falling back to a
-	 * default when all three channels are zero (meaning "use theme default").
-	 * @param {number} r8 - 0-255 red channel from cell
-	 * @param {number} g8 - 0-255 green channel from cell
-	 * @param {number} b8 - 0-255 blue channel from cell
-	 * @param {{ r: number, g: number, b: number }} fallback - theme default color
-	 * @returns {{ r: number, g: number, b: number }}
-	 */
-	_resolveColor(r8, g8, b8, fallback) {
-		if (r8 === 0 && g8 === 0 && b8 === 0) return fallback;
-		return { r: r8 / 255, g: g8 / 255, b: b8 / 255 };
-	}
-
-	/**
 	 * Pack a single row of cells into the bg and fg instance arrays.
 	 * @param {GhosttyCell[]} cells
 	 * @param {number} row - visual row index
@@ -676,6 +919,7 @@ export default class WebGL2TerminalRenderer {
 		const defaultFg = this._fgColor;
 		let bgIdx = bgOffset;
 		let fgIdx = fgOffset;
+		let bgR, bgG, bgB, fgR, fgG, fgB;
 
 		for (let c = 0; c < cells.length; c++) {
 			const cell = cells[c];
@@ -683,11 +927,27 @@ export default class WebGL2TerminalRenderer {
 
 			const isInverse = (cell.flags & CellFlags.INVERSE) !== 0;
 
-			// Resolve colors — when inverse, bg/fg sources swap.
-			// A zero triplet (0,0,0) means "use theme default" for that role.
-			const bg = isInverse
-				? this._resolveColor(cell.fg_r, cell.fg_g, cell.fg_b, defaultFg)
-				: this._resolveColor(cell.bg_r, cell.bg_g, cell.bg_b, defaultBg);
+			// Resolve BG color — when inverse, fg sources become bg and vice versa.
+			// Flag bits (FLAG_FG_DEFAULT / FLAG_BG_DEFAULT) are authoritative when
+			// set by XtermAdapter; the (0,0,0) sentinel is a legacy fallback for
+			// the ghostty IRenderable path where genuine black is not used.
+			if (isInverse) {
+				if (cell.flags & FLAG_FG_DEFAULT) {
+					bgR = defaultFg.r; bgG = defaultFg.g; bgB = defaultFg.b;
+				} else if (cell.fg_r === 0 && cell.fg_g === 0 && cell.fg_b === 0) {
+					bgR = defaultFg.r; bgG = defaultFg.g; bgB = defaultFg.b;
+				} else {
+					bgR = cell.fg_r / 255; bgG = cell.fg_g / 255; bgB = cell.fg_b / 255;
+				}
+			} else {
+				if (cell.flags & FLAG_BG_DEFAULT) {
+					bgR = defaultBg.r; bgG = defaultBg.g; bgB = defaultBg.b;
+				} else if (cell.bg_r === 0 && cell.bg_g === 0 && cell.bg_b === 0) {
+					bgR = defaultBg.r; bgG = defaultBg.g; bgB = defaultBg.b;
+				} else {
+					bgR = cell.bg_r / 255; bgG = cell.bg_g / 255; bgB = cell.bg_b / 255;
+				}
+			}
 
 			const cellWidth = cell.width || 1;
 
@@ -695,9 +955,9 @@ export default class WebGL2TerminalRenderer {
 			bgData[bgIdx]     = c;
 			bgData[bgIdx + 1] = row;
 			bgData[bgIdx + 2] = cellWidth;
-			bgData[bgIdx + 3] = bg.r;
-			bgData[bgIdx + 4] = bg.g;
-			bgData[bgIdx + 5] = bg.b;
+			bgData[bgIdx + 3] = bgR;
+			bgData[bgIdx + 4] = bgG;
+			bgData[bgIdx + 5] = bgB;
 			bgIdx += BG_FLOATS_PER_INSTANCE;
 
 			// FG instance (skip spaces / null codepoints)
@@ -705,9 +965,24 @@ export default class WebGL2TerminalRenderer {
 			if (cp > 0x20) {
 				const glyph = this._atlas.getGlyph(cp, cell.flags);
 				if (glyph) {
-					const fg = isInverse
-						? this._resolveColor(cell.bg_r, cell.bg_g, cell.bg_b, defaultBg)
-						: this._resolveColor(cell.fg_r, cell.fg_g, cell.fg_b, defaultFg);
+					// Resolve FG color — inverse swaps sources
+					if (isInverse) {
+						if (cell.flags & FLAG_BG_DEFAULT) {
+							fgR = defaultBg.r; fgG = defaultBg.g; fgB = defaultBg.b;
+						} else if (cell.bg_r === 0 && cell.bg_g === 0 && cell.bg_b === 0) {
+							fgR = defaultBg.r; fgG = defaultBg.g; fgB = defaultBg.b;
+						} else {
+							fgR = cell.bg_r / 255; fgG = cell.bg_g / 255; fgB = cell.bg_b / 255;
+						}
+					} else {
+						if (cell.flags & FLAG_FG_DEFAULT) {
+							fgR = defaultFg.r; fgG = defaultFg.g; fgB = defaultFg.b;
+						} else if (cell.fg_r === 0 && cell.fg_g === 0 && cell.fg_b === 0) {
+							fgR = defaultFg.r; fgG = defaultFg.g; fgB = defaultFg.b;
+						} else {
+							fgR = cell.fg_r / 255; fgG = cell.fg_g / 255; fgB = cell.fg_b / 255;
+						}
+					}
 
 					fgData[fgIdx]     = c;
 					fgData[fgIdx + 1] = row;
@@ -715,9 +990,9 @@ export default class WebGL2TerminalRenderer {
 					fgData[fgIdx + 3] = glyph.v;
 					fgData[fgIdx + 4] = glyph.w;
 					fgData[fgIdx + 5] = glyph.h;
-					fgData[fgIdx + 6] = fg.r;
-					fgData[fgIdx + 7] = fg.g;
-					fgData[fgIdx + 8] = fg.b;
+					fgData[fgIdx + 6] = fgR;
+					fgData[fgIdx + 7] = fgG;
+					fgData[fgIdx + 8] = fgB;
 					fgIdx += FG_FLOATS_PER_INSTANCE;
 				}
 			}
@@ -735,7 +1010,7 @@ export default class WebGL2TerminalRenderer {
 	 * @param {number} cols - total visible cols
 	 */
 	_packSelection(rows, cols) {
-		this._selCount = 0;
+		this._drawState.selCount = 0;
 		if (!this._selectionManager) return;
 
 		const sel = this._selectionManager.getSelection();
@@ -763,7 +1038,7 @@ export default class WebGL2TerminalRenderer {
 			}
 		}
 
-		this._selCount = idx / SEL_FLOATS_PER_INSTANCE;
+		this._drawState.selCount = idx / SEL_FLOATS_PER_INSTANCE;
 	}
 
 	/**
@@ -846,6 +1121,7 @@ export default class WebGL2TerminalRenderer {
 		if (this._disposed || this._contextLost) return;
 
 		const gl = this._gl;
+		const ds = this._drawState;
 
 		// Re-upload atlas texture if new glyphs were rasterized on demand
 		if (this._atlas._dirty) {
@@ -871,8 +1147,8 @@ export default class WebGL2TerminalRenderer {
 		// -------------------------------------------------------------------
 
 		if (fullRedraw) {
-			this._bgCount = 0;
-			this._fgCount = 0;
+			ds.bgCount = 0;
+			ds.fgCount = 0;
 			let bgOffset = 0;
 			let fgOffset = 0;
 
@@ -891,7 +1167,7 @@ export default class WebGL2TerminalRenderer {
 					}
 					this._rowBgOffsets[r] = cols;
 					this._rowFgOffsets[r] = 0;
-					this._bgCount += cols;
+					ds.bgCount += cols;
 					continue;
 				}
 
@@ -902,18 +1178,19 @@ export default class WebGL2TerminalRenderer {
 
 				bgOffset += result.bgWritten * BG_FLOATS_PER_INSTANCE;
 				fgOffset += result.fgWritten * FG_FLOATS_PER_INSTANCE;
-				this._bgCount += result.bgWritten;
-				this._fgCount += result.fgWritten;
+				ds.bgCount += result.bgWritten;
+				ds.fgCount += result.fgWritten;
 			}
 
 			// Full upload
-			gl.bindBuffer(gl.ARRAY_BUFFER, this._bgInstanceBuf);
-			gl.bufferData(gl.ARRAY_BUFFER, this._bgData.subarray(0, this._bgCount * BG_FLOATS_PER_INSTANCE), gl.DYNAMIC_DRAW);
+			gl.bindBuffer(gl.ARRAY_BUFFER, ds.bgInstanceBuf);
+			gl.bufferData(gl.ARRAY_BUFFER, this._bgData.subarray(0, ds.bgCount * BG_FLOATS_PER_INSTANCE), gl.DYNAMIC_DRAW);
 
-			gl.bindBuffer(gl.ARRAY_BUFFER, this._fgInstanceBuf);
-			gl.bufferData(gl.ARRAY_BUFFER, this._fgData.subarray(0, this._fgCount * FG_FLOATS_PER_INSTANCE), gl.DYNAMIC_DRAW);
+			gl.bindBuffer(gl.ARRAY_BUFFER, ds.fgInstanceBuf);
+			gl.bufferData(gl.ARRAY_BUFFER, this._fgData.subarray(0, ds.fgCount * FG_FLOATS_PER_INSTANCE), gl.DYNAMIC_DRAW);
 
 			this._needsFullPack = false;
+			ds.needsFullPack = false;
 		} else {
 			// Incremental: only update dirty rows
 			let anyDirty = false;
@@ -938,7 +1215,7 @@ export default class WebGL2TerminalRenderer {
 				const result = this._packRow(line, r, tempBgOffset, tempFgOffset);
 
 				// Upload the bg portion for this row
-				gl.bindBuffer(gl.ARRAY_BUFFER, this._bgInstanceBuf);
+				gl.bindBuffer(gl.ARRAY_BUFFER, ds.bgInstanceBuf);
 				gl.bufferSubData(
 					gl.ARRAY_BUFFER,
 					bgByteOffset,
@@ -961,11 +1238,11 @@ export default class WebGL2TerminalRenderer {
 
 		// Pack selection
 		this._packSelection(rows, cols);
-		if (this._selCount > 0) {
-			gl.bindBuffer(gl.ARRAY_BUFFER, this._selInstanceBuf);
+		if (ds.selCount > 0) {
+			gl.bindBuffer(gl.ARRAY_BUFFER, ds.selInstanceBuf);
 			gl.bufferData(
 				gl.ARRAY_BUFFER,
-				this._selData.subarray(0, this._selCount * SEL_FLOATS_PER_INSTANCE),
+				this._selData.subarray(0, ds.selCount * SEL_FLOATS_PER_INSTANCE),
 				gl.DYNAMIC_DRAW,
 			);
 		}
@@ -974,7 +1251,7 @@ export default class WebGL2TerminalRenderer {
 		const cursor = buffer.getCursor();
 		const drawCursor = this._packCursor(cursor);
 		if (drawCursor) {
-			gl.bindBuffer(gl.ARRAY_BUFFER, this._cursorInstanceBuf);
+			gl.bindBuffer(gl.ARRAY_BUFFER, ds.cursorInstanceBuf);
 			gl.bufferData(gl.ARRAY_BUFFER, this._cursorData, gl.DYNAMIC_DRAW);
 		}
 
@@ -982,64 +1259,15 @@ export default class WebGL2TerminalRenderer {
 		buffer.clearDirty();
 
 		// -------------------------------------------------------------------
-		// Draw
+		// Draw — delegate to SharedGPUResources
 		// -------------------------------------------------------------------
 
-		const cellSizeX = 1.0 / cols;
-		const cellSizeY = 1.0 / rows;
-
-		gl.clearColor(this._bgColor.r, this._bgColor.g, this._bgColor.b, 1.0);
-		gl.clear(gl.COLOR_BUFFER_BIT);
-
-		// Pass 1: Backgrounds
-		if (this._bgCount > 0) {
-			gl.useProgram(this._bgProgram);
-			gl.uniform2f(this._bgUCellSize, cellSizeX, cellSizeY);
-			gl.uniform2f(this._bgUGridOrigin, 0, 0);
-			gl.bindVertexArray(this._bgVAO);
-			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this._bgCount);
-		}
-
-		// Pass 2: Selection overlay
-		if (this._selCount > 0) {
-			gl.enable(gl.BLEND);
-			gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-			gl.useProgram(this._selProgram);
-			gl.uniform2f(this._selUCellSize, cellSizeX, cellSizeY);
-			gl.uniform2f(this._selUGridOrigin, 0, 0);
-			gl.bindVertexArray(this._selVAO);
-			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this._selCount);
-			gl.disable(gl.BLEND);
-		}
-
-		// Pass 3: Glyphs
-		if (this._fgCount > 0) {
-			gl.enable(gl.BLEND);
-			gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-			gl.useProgram(this._fgProgram);
-			gl.uniform2f(this._fgUCellSize, cellSizeX, cellSizeY);
-			gl.uniform2f(this._fgUGridOrigin, 0, 0);
-			gl.activeTexture(gl.TEXTURE0);
-			gl.bindTexture(gl.TEXTURE_2D, this._atlasTexture);
-			gl.uniform1i(this._fgUAtlas, 0);
-			gl.bindVertexArray(this._fgVAO);
-			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this._fgCount);
-			gl.disable(gl.BLEND);
-		}
-
-		// Pass 4: Cursor
-		if (drawCursor) {
-			gl.enable(gl.BLEND);
-			gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-			gl.useProgram(this._cursorProgram);
-			gl.uniform2f(this._cursorUCellSize, cellSizeX, cellSizeY);
-			gl.uniform2f(this._cursorUGridOrigin, 0, 0);
-			gl.bindVertexArray(this._cursorVAO);
-			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 1);
-			gl.disable(gl.BLEND);
-		}
-
-		gl.bindVertexArray(null);
+		this._sharedResources.drawTerminal(ds, {
+			bgColor: this._bgColor,
+			cols,
+			rows,
+			drawCursor,
+		});
 	}
 
 	/**
@@ -1070,10 +1298,11 @@ export default class WebGL2TerminalRenderer {
 	 */
 	_repackAllFg(buffer, rows, viewportY, scrollbackProvider) {
 		let fgOffset = 0;
-		this._fgCount = 0;
+		this._drawState.fgCount = 0;
 		const defaultFg = this._fgColor;
 		const defaultBg = this._bgColor;
 		const fgData = this._fgData;
+		let fgR, fgG, fgB;
 
 		for (let r = 0; r < rows; r++) {
 			const line = this._getLine(buffer, r, viewportY, scrollbackProvider);
@@ -1090,9 +1319,25 @@ export default class WebGL2TerminalRenderer {
 				if (!glyph) continue;
 
 				const isInverse = (cell.flags & CellFlags.INVERSE) !== 0;
-				const fg = isInverse
-					? this._resolveColor(cell.bg_r, cell.bg_g, cell.bg_b, defaultBg)
-					: this._resolveColor(cell.fg_r, cell.fg_g, cell.fg_b, defaultFg);
+				// Resolve FG color — flag bits are authoritative (xterm adapter),
+				// (0,0,0) sentinel is legacy fallback (ghostty path).
+				if (isInverse) {
+					if (cell.flags & FLAG_BG_DEFAULT) {
+						fgR = defaultBg.r; fgG = defaultBg.g; fgB = defaultBg.b;
+					} else if (cell.bg_r === 0 && cell.bg_g === 0 && cell.bg_b === 0) {
+						fgR = defaultBg.r; fgG = defaultBg.g; fgB = defaultBg.b;
+					} else {
+						fgR = cell.bg_r / 255; fgG = cell.bg_g / 255; fgB = cell.bg_b / 255;
+					}
+				} else {
+					if (cell.flags & FLAG_FG_DEFAULT) {
+						fgR = defaultFg.r; fgG = defaultFg.g; fgB = defaultFg.b;
+					} else if (cell.fg_r === 0 && cell.fg_g === 0 && cell.fg_b === 0) {
+						fgR = defaultFg.r; fgG = defaultFg.g; fgB = defaultFg.b;
+					} else {
+						fgR = cell.fg_r / 255; fgG = cell.fg_g / 255; fgB = cell.fg_b / 255;
+					}
+				}
 
 				fgData[fgOffset]     = c;
 				fgData[fgOffset + 1] = r;
@@ -1100,19 +1345,19 @@ export default class WebGL2TerminalRenderer {
 				fgData[fgOffset + 3] = glyph.v;
 				fgData[fgOffset + 4] = glyph.w;
 				fgData[fgOffset + 5] = glyph.h;
-				fgData[fgOffset + 6] = fg.r;
-				fgData[fgOffset + 7] = fg.g;
-				fgData[fgOffset + 8] = fg.b;
+				fgData[fgOffset + 6] = fgR;
+				fgData[fgOffset + 7] = fgG;
+				fgData[fgOffset + 8] = fgB;
 				fgOffset += FG_FLOATS_PER_INSTANCE;
-				this._fgCount++;
+				this._drawState.fgCount++;
 			}
 		}
 
 		const gl = this._gl;
-		gl.bindBuffer(gl.ARRAY_BUFFER, this._fgInstanceBuf);
+		gl.bindBuffer(gl.ARRAY_BUFFER, this._drawState.fgInstanceBuf);
 		gl.bufferData(
 			gl.ARRAY_BUFFER,
-			fgData.subarray(0, this._fgCount * FG_FLOATS_PER_INSTANCE),
+			fgData.subarray(0, this._drawState.fgCount * FG_FLOATS_PER_INSTANCE),
 			gl.DYNAMIC_DRAW,
 		);
 	}
@@ -1271,9 +1516,9 @@ export default class WebGL2TerminalRenderer {
 		gl.clearColor(this._bgColor.r, this._bgColor.g, this._bgColor.b, 1.0);
 		gl.clear(gl.COLOR_BUFFER_BIT);
 
-		this._bgCount = 0;
-		this._fgCount = 0;
-		this._selCount = 0;
+		this._drawState.bgCount = 0;
+		this._drawState.fgCount = 0;
+		this._drawState.selCount = 0;
 		this._needsFullPack = true;
 	}
 
@@ -1291,30 +1536,15 @@ export default class WebGL2TerminalRenderer {
 
 		if (this._contextLost) return;
 
-		const gl = this._gl;
+		// Dispose sub-objects
+		if (this._drawState) {
+			this._drawState.dispose();
+		}
+		if (this._sharedResources) {
+			this._sharedResources.dispose();
+		}
 
-		// Programs
-		gl.deleteProgram(this._bgProgram);
-		gl.deleteProgram(this._selProgram);
-		gl.deleteProgram(this._fgProgram);
-		gl.deleteProgram(this._cursorProgram);
-
-		// VAOs
-		gl.deleteVertexArray(this._bgVAO);
-		gl.deleteVertexArray(this._selVAO);
-		gl.deleteVertexArray(this._fgVAO);
-		gl.deleteVertexArray(this._cursorVAO);
-
-		// Buffers
-		gl.deleteBuffer(this._bgInstanceBuf);
-		gl.deleteBuffer(this._selInstanceBuf);
-		gl.deleteBuffer(this._fgInstanceBuf);
-		gl.deleteBuffer(this._cursorInstanceBuf);
-
-		// Textures
-		gl.deleteTexture(this._atlasTexture);
-
-		// Release typed arrays
+		// Release typed array aliases
 		this._bgData = null;
 		this._fgData = null;
 		this._selData = null;

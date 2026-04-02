@@ -3,25 +3,29 @@
  * tiles in the Collaborator shell window.
  *
  * Solves Chromium's ~16 WebGL context limit by allocating per-terminal
- * framebuffer objects (FBOs) for offscreen rendering, then blitting results
- * to each terminal's visible canvas.
+ * framebuffer objects (FBOs) for offscreen rendering.  Compositing of FBO
+ * textures onto the visible canvas is handled by GPUCompositor (owned here).
  *
  * Architecture:
  *   1. One hidden OffscreenCanvas holds the sole WebGL2 context.
  *   2. Each terminal gets an FBO + color texture attachment sized to its
  *      pixel dimensions.
  *   3. The renderer binds a terminal's FBO before drawing, unbinds after.
- *   4. blitToCanvas() copies the FBO content to the visible <canvas> via
- *      blitFramebuffer → transferToImageBitmap → transferFromImageBitmap.
+ *   4. GPUCompositor draws all terminal textures as quads onto the default
+ *      framebuffer in a single compositing pass.
  *
- * Designed for integration with WebGL2TerminalRenderer (step 10d will
- * refactor that class to accept an external GL context + FBO handle instead
- * of creating its own context).
+ * Owns:
+ *   - SharedGPUResources (shader programs, buffers, atlas texture)
+ *   - GPUCompositor (single-canvas compositing)
+ *
+ * Use acquireSharedGL() / releaseSharedGL() for ref-counted singleton access.
  *
  * @module shared-gl-context
  */
 
 import FontAtlas from "./font-atlas.js";
+import { SharedGPUResources } from "./gpu-terminal-renderer.js";
+import GPUCompositor from "./gpu-compositor.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,6 +61,13 @@ const DEFAULT_HEIGHT = 1080;
  */
 
 // ---------------------------------------------------------------------------
+// Ref-counted singleton
+// ---------------------------------------------------------------------------
+
+let instance = null;
+let refCount = 0;
+
+// ---------------------------------------------------------------------------
 // SharedGLContext
 // ---------------------------------------------------------------------------
 
@@ -78,6 +89,7 @@ export default class SharedGLContext {
       fontSize = 14,
       fontFamily = 'Menlo, Monaco, "Courier New", monospace',
       devicePixelRatio = (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1,
+      cellOverrides = {},
     } = options;
 
     // --- OffscreenCanvas + WebGL2 context ---------------------------------
@@ -133,7 +145,7 @@ export default class SharedGLContext {
     this._dpr = devicePixelRatio;
 
     /** @type {FontAtlas} */
-    this._fontAtlas = new FontAtlas(fontSize, fontFamily, devicePixelRatio);
+    this._fontAtlas = new FontAtlas(fontSize, fontFamily, devicePixelRatio, cellOverrides);
 
     /** @type {WebGLTexture | null} */
     this._atlasTexture = null;
@@ -145,6 +157,28 @@ export default class SharedGLContext {
 
     // Initial atlas upload
     this._uploadAtlas();
+
+    // --- Shared GPU resources (shader programs, buffers, atlas texture) -----
+
+    /** @type {SharedGPUResources} */
+    this._sharedResources = new SharedGPUResources(this._gl);
+    this._sharedResources.uploadAtlas(this._fontAtlas);
+
+    // --- GPU compositor (single-canvas compositing) -------------------------
+
+    /** @type {GPUCompositor} */
+    this._compositor = new GPUCompositor(this._gl);
+
+    // --- Cleanup on window unload -------------------------------------------
+
+    /** @type {(() => void) | null} */
+    this._beforeUnloadHandler = null;
+    if (typeof window !== 'undefined') {
+      this._beforeUnloadHandler = () => {
+        this.dispose();
+      };
+      window.addEventListener('beforeunload', this._beforeUnloadHandler);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -190,6 +224,99 @@ export default class SharedGLContext {
    */
   isContextLost() {
     return this._contextLost;
+  }
+
+  /**
+   * Returns the SharedGPUResources instance (shader programs, buffers, atlas).
+   * @returns {SharedGPUResources}
+   */
+  getSharedResources() {
+    return this._sharedResources;
+  }
+
+  /**
+   * Returns the GPUCompositor instance for single-canvas compositing.
+   * @returns {GPUCompositor}
+   */
+  getCompositor() {
+    return this._compositor;
+  }
+
+  /**
+   * Rebuild the font atlas at a new size. Re-uploads to GPU.
+   * @param {number} fontSize
+   * @param {string} fontFamily
+   * @param {number} dpr
+   * @param {Object} [overrides]
+   */
+  rebuildFontAtlas(fontSize, fontFamily, dpr, overrides = {}) {
+    this._fontAtlas.destroy();
+    this._fontSize = fontSize;
+    this._fontFamily = fontFamily;
+    this._dpr = dpr;
+    this._fontAtlas = new FontAtlas(fontSize, fontFamily, dpr, overrides);
+    this._sharedResources.uploadAtlas(this._fontAtlas);
+    this._uploadAtlas();
+  }
+
+  /**
+   * Returns the FBO color texture for a terminal, or null if not allocated.
+   * @param {string} id - Terminal identifier
+   * @returns {WebGLTexture | null}
+   */
+  getTerminalTexture(id) {
+    const record = this._terminals.get(id);
+    return record ? record.texture : null;
+  }
+
+  /**
+   * Present a terminal's FBO content to a visible canvas.
+   *
+   * Composites the terminal's FBO texture onto the OffscreenCanvas (default
+   * framebuffer), then transfers the bitmap to the target canvas via the
+   * zero-copy ImageBitmapRenderingContext path.
+   *
+   * @param {string} id                  - Terminal identifier
+   * @param {HTMLCanvasElement} canvas    - Visible canvas to present to
+   */
+  presentTerminal(id, canvas) {
+    const record = this._terminals.get(id);
+    if (!record || this._contextLost) return;
+
+    const { width, height, texture } = record;
+
+    // Resize offscreen canvas to match terminal FBO so transferToImageBitmap
+    // captures exactly the right region.
+    if (this._offscreen.width !== width || this._offscreen.height !== height) {
+      this._offscreen.width = width;
+      this._offscreen.height = height;
+    }
+
+    // Composite this terminal's texture to the default framebuffer
+    this._compositor.compositeAll(
+      [{ texture, x: 0, y: 0, width, height }],
+      width,
+      height,
+    );
+
+    // Transfer to visible canvas
+    const bitmap = this._offscreen.transferToImageBitmap();
+
+    let ctx = canvas._sharedGLBitmapCtx;
+    if (!ctx) {
+      ctx = canvas.getContext("bitmaprenderer");
+      if (!ctx) ctx = canvas.getContext("2d");
+      canvas._sharedGLBitmapCtx = ctx;
+    }
+
+    if (typeof ctx.transferFromImageBitmap === "function") {
+      ctx.transferFromImageBitmap(bitmap);
+    } else if (typeof ctx.drawImage === "function") {
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+    } else {
+      bitmap.close();
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -251,9 +378,6 @@ export default class SharedGLContext {
     /** @type {TerminalRecord} */
     const record = { id, fbo, texture, width, height };
     this._terminals.set(id, record);
-
-    // Ensure the offscreen canvas is large enough for blitting
-    this._ensureOffscreenSize(width, height);
 
     return { fbo, texture, width, height };
   }
@@ -317,9 +441,6 @@ export default class SharedGLContext {
     record.texture = texture;
     record.width = width;
     record.height = height;
-
-    // Ensure the offscreen canvas is large enough for blitting
-    this._ensureOffscreenSize(width, height);
 
     return { fbo: record.fbo, texture, width, height };
   }
@@ -386,73 +507,6 @@ export default class SharedGLContext {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  /**
-   * Copy the rendered FBO content to a visible canvas element.
-   *
-   * Strategy: blit FBO -> default framebuffer (offscreen canvas), then
-   * transferToImageBitmap -> transferFromImageBitmap on the visible canvas.
-   * This avoids gl.readPixels entirely for maximum throughput.
-   *
-   * @param {string} id                  - Terminal identifier
-   * @param {HTMLCanvasElement} canvas    - The visible canvas to draw into
-   */
-  blitToCanvas(id, canvas) {
-    const record = this._terminals.get(id);
-    if (!record) {
-      throw new Error(`[shared-gl-context] Cannot blit: terminal "${id}" not allocated`);
-    }
-
-    if (this._contextLost) return;
-
-    const gl = this._gl;
-    const { width, height } = record;
-
-    // Resize offscreen canvas to match this terminal's FBO so the blit
-    // covers exactly the right region and transferToImageBitmap captures
-    // just the terminal content.
-    this._resizeOffscreen(width, height);
-
-    // Blit from terminal FBO (READ) to default framebuffer (DRAW)
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, record.fbo);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-
-    gl.blitFramebuffer(
-      0, 0, width, height,   // src rect
-      0, 0, width, height,   // dst rect
-      gl.COLOR_BUFFER_BIT,
-      gl.NEAREST,
-    );
-
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-
-    // Transfer the default framebuffer content to an ImageBitmap
-    const bitmap = this._offscreen.transferToImageBitmap();
-
-    // Draw onto the visible canvas
-    // Ensure the visible canvas has a bitmaprenderer or 2d context
-    let ctx = canvas._sharedGLBitmapCtx;
-    if (!ctx) {
-      // Prefer ImageBitmapRenderingContext (zero-copy) over 2D drawImage
-      ctx = canvas.getContext("bitmaprenderer");
-      if (!ctx) {
-        // Fallback: use 2D context
-        ctx = canvas.getContext("2d");
-      }
-      canvas._sharedGLBitmapCtx = ctx;
-    }
-
-    if (typeof ctx.transferFromImageBitmap === "function") {
-      // ImageBitmapRenderingContext path (zero-copy, fastest)
-      ctx.transferFromImageBitmap(bitmap);
-    } else if (typeof ctx.drawImage === "function") {
-      // CanvasRenderingContext2D fallback
-      ctx.drawImage(bitmap, 0, 0);
-      bitmap.close();
-    } else {
-      bitmap.close();
-    }
-  }
-
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
@@ -464,50 +518,6 @@ export default class SharedGLContext {
   _uploadAtlas() {
     if (this._contextLost) return;
     this._atlasTexture = this._fontAtlas.uploadToGL(this._gl);
-  }
-
-  /**
-   * Ensure the offscreen canvas is at least as large as the given dimensions.
-   * Only grows; never shrinks (to avoid constant reallocation).
-   *
-   * @param {number} width
-   * @param {number} height
-   * @private
-   */
-  _ensureOffscreenSize(width, height) {
-    let changed = false;
-    let newW = this._offscreen.width;
-    let newH = this._offscreen.height;
-
-    if (width > newW) {
-      newW = width;
-      changed = true;
-    }
-    if (height > newH) {
-      newH = height;
-      changed = true;
-    }
-
-    if (changed) {
-      this._offscreen.width = newW;
-      this._offscreen.height = newH;
-    }
-  }
-
-  /**
-   * Resize the offscreen canvas to exactly the given dimensions.
-   * Used before blitFramebuffer so transferToImageBitmap captures the
-   * correct region.
-   *
-   * @param {number} width
-   * @param {number} height
-   * @private
-   */
-  _resizeOffscreen(width, height) {
-    if (this._offscreen.width !== width || this._offscreen.height !== height) {
-      this._offscreen.width = width;
-      this._offscreen.height = height;
-    }
   }
 
   /**
@@ -552,6 +562,12 @@ export default class SharedGLContext {
       record.fbo = fbo;
       record.texture = texture;
     }
+
+    // Rebuild shared GPU resources (shader programs, buffers, atlas texture)
+    this._sharedResources?.dispose();
+    this._sharedResources = new SharedGPUResources(this._gl);
+    this._sharedResources.uploadAtlas(this._fontAtlas);
+    // Compositor just uses textures, no state to rebuild
   }
 
   // -----------------------------------------------------------------------
@@ -567,6 +583,13 @@ export default class SharedGLContext {
     this._disposed = true;
 
     const gl = this._gl;
+
+    // Release shared GPU resources and compositor
+    this._sharedResources?.dispose();
+    this._sharedResources = null;
+
+    this._compositor?.dispose();
+    this._compositor = null;
 
     // Release all terminal FBOs
     for (const [id] of [...this._terminals.keys()]) {
@@ -584,6 +607,12 @@ export default class SharedGLContext {
     this._offscreen.removeEventListener("webglcontextlost", this._onContextLost);
     this._offscreen.removeEventListener("webglcontextrestored", this._onContextRestored);
 
+    // Remove beforeunload listener
+    if (typeof window !== 'undefined' && this._beforeUnloadHandler) {
+      window.removeEventListener('beforeunload', this._beforeUnloadHandler);
+      this._beforeUnloadHandler = null;
+    }
+
     // Lose the context explicitly (frees GPU resources)
     const loseCtx = gl.getExtension("WEBGL_lose_context");
     if (loseCtx) {
@@ -592,5 +621,43 @@ export default class SharedGLContext {
 
     this._gl = null;
     this._offscreen = null;
+
+    // Clear singleton if this is the active instance
+    if (instance === this) {
+      instance = null;
+      refCount = 0;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ref-counted singleton accessors
+// ---------------------------------------------------------------------------
+
+/**
+ * Acquire a reference to the shared SharedGLContext singleton.
+ * Creates the instance on first call; subsequent calls increment the
+ * reference count and return the same instance.
+ *
+ * @param {Object} [options] - Passed to SharedGLContext constructor on first call.
+ * @returns {SharedGLContext}
+ */
+export function acquireSharedGL(options) {
+  if (!instance) {
+    instance = new SharedGLContext(options);
+  }
+  refCount++;
+  return instance;
+}
+
+/**
+ * Release a reference to the shared SharedGLContext singleton.
+ * When the last reference is released, the instance is disposed.
+ */
+export function releaseSharedGL() {
+  if (--refCount <= 0) {
+    instance?.dispose();
+    instance = null;
+    refCount = 0;
   }
 }

@@ -1,7 +1,5 @@
 [test]
 root = "."
-# node-pty requires Node's libuv; run separately via: npx tsx --test src/main/sidecar/client.test.ts
-exclude = ["**/sidecar/client.node-test.ts"]
 
 [resolve.alias]
 # Mirror the aliases from electron.vite.config.ts so bun test can resolve them

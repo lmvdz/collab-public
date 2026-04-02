@@ -1,8 +1,8 @@
 import {
   app,
+  BrowserWindow,
   ipcMain,
   dialog,
-  type BrowserWindow,
 } from "electron";
 import {
   appendFileSync,
@@ -228,6 +228,17 @@ export function registerWorkspaceHandlers(
 
   ipcMain.handle("config:get", () => appConfig);
   ipcMain.handle("app:version", () => app.getVersion());
+  ipcMain.handle("app:restart", () => {
+    if (app.isPackaged) {
+      app.relaunch();
+      app.quit();
+    } else {
+      // Dev mode: reload all windows instead of relaunching
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.reloadIgnoringCache();
+      }
+    }
+  });
 
   ipcMain.handle(
     "workspace-pref:get",

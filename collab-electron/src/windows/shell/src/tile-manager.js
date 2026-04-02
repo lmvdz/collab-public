@@ -11,7 +11,7 @@ import { toCollabFileUrl } from "@collab/shared/collab-file-url";
 import { workspaceRootMatch } from "@collab/shared/path-utils";
 import { attachDrag, attachResize } from "./tile-interactions.js";
 import { findAutoPlacement } from "./canvas-rpc.js";
-import { createTerminal, getTerminal, disposeTerminal, initPtyDataDispatch } from "./terminal-embed.js";
+import { createTerminal, getTerminal, disposeTerminal, initPtyDataDispatch, initGpuRenderer } from "./terminal-embed.js";
 
 let inProcessTerminals = false;
 
@@ -284,7 +284,11 @@ export function createTileManager({
 			saveCanvasDebounced();
 		}
 
-		const handle = createTerminal(container, sessionId, { scrollbackData, mode, restored });
+		const handle = await createTerminal(container, sessionId, { scrollbackData, mode, restored });
+
+		if (onTerminalSessionCreated) {
+			onTerminalSessionCreated(tile);
+		}
 
 		if (autoFocus) {
 			handle.focus();
@@ -293,7 +297,9 @@ export function createTileManager({
 
 	function spawnTerminal(tile, autoFocus = false) {
 		if (inProcessTerminals) {
-			spawnTerminalDiv(tile, autoFocus);
+			spawnTerminalDiv(tile, autoFocus).catch((err) => {
+				console.error("[tile-manager] Failed to spawn in-process terminal:", err);
+			});
 		} else {
 			spawnTerminalWebview(tile, autoFocus);
 		}
@@ -799,6 +805,7 @@ export function createTileManager({
 		}
 		if (inProcessTerminals) {
 			initPtyDataDispatch();
+			await initGpuRenderer();
 		}
 	}
 

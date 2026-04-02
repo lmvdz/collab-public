@@ -26,6 +26,8 @@ import {
   getTerminalBackend,
   getTerminalMode,
   getInProcessTerminals,
+  getGpuRenderer,
+  getUncapFrameRate,
   type WindowState,
   type TerminalTarget,
 } from "./config";
@@ -645,6 +647,7 @@ ipcMain.handle(
   (_event, sessionId: string) => pty.getForegroundProcess(sessionId),
 );
 
+
 ipcMain.handle(
   "pty:capture",
   (
@@ -657,6 +660,12 @@ ipcMain.handle(
   "shell:get-in-process-terminals", 
   () => getInProcessTerminals()
 );
+
+ipcMain.handle(
+  "shell:get-gpu-renderer", 
+  () => getGpuRenderer()
+);
+
 
 let settingsOpen = false;
 
@@ -765,6 +774,12 @@ app.on("web-contents-created", (_event, contents) => {
     }
   });
 });
+
+// Conditionally unlock frame rate based on user preference.
+// Must be set before app.whenReady() — takes effect on next launch.
+if (getUncapFrameRate()) {
+  app.commandLine.appendSwitch("disable-frame-rate-limit");
+}
 
 app.whenReady().then(async () => {
   // Set a standard Chrome user-agent on the browser tile session so sites

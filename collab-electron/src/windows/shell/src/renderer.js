@@ -684,7 +684,7 @@ async function init() {
 	// -- Space+click and middle-click pan --
 
 	window.addEventListener("keydown", (e) => {
-		if (e.code === "Space" && !e.target.closest?.("webview")) {
+		if (e.code === "Space" && !e.target.closest?.("webview") && !e.target.closest?.(".terminal-embed-container")) {
 			e.preventDefault();
 			if (!e.repeat && !spaceHeld) {
 				spaceHeld = true;
@@ -732,14 +732,34 @@ async function init() {
 			h.webview.style.pointerEvents = "none";
 		}
 
+		// Use CSS transform on the tile layer during pan for smooth 60fps.
+		// This avoids per-tile style updates and grid redraws on every frame.
+		const tileLayer = document.getElementById("tile-layer");
+		let panRafId = 0;
+
 		function onMove(ev) {
 			viewportState.panX = startPanX + (ev.clientX - startMX);
 			viewportState.panY = startPanY + (ev.clientY - startMY);
-			viewport.updateCanvas();
+			if (!panRafId) {
+				panRafId = requestAnimationFrame(() => {
+					panRafId = 0;
+					// Translate the entire tile layer instead of repositioning each tile
+					if (tileLayer) {
+						const dx = viewportState.panX - startPanX;
+						const dy = viewportState.panY - startPanY;
+						tileLayer.style.transform = `translate(${dx}px, ${dy}px)`;
+					}
+					viewport.drawGrid();
+				});
+			}
 		}
 
 		function onUp() {
 			isPanning = false;
+			if (panRafId) { cancelAnimationFrame(panRafId); panRafId = 0; }
+			// Reset transform and do proper tile repositioning
+			if (tileLayer) { tileLayer.style.transform = ""; }
+			viewport.updateCanvas();
 			canvasEl.classList.remove("panning");
 			if (!spaceHeld) {
 				canvasEl.classList.remove("space-held");

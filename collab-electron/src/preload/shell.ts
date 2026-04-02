@@ -49,6 +49,9 @@ contextBridge.exposeInMainWorld("shellApi", {
   getInProcessTerminals: (): Promise<boolean> =>
     ipcRenderer.invoke("shell:get-in-process-terminals"),
 
+  getGpuRenderer: (): Promise<boolean> =>
+    ipcRenderer.invoke("shell:get-gpu-renderer"),
+
   onForwardToWebview: (
     cb: (target: string, channel: string, ...args: unknown[]) => void,
   ) => {

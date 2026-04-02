@@ -1,88 +1,54 @@
-import { init as initGhostty, Terminal, FitAddon } from "ghostty-web";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { getTheme } from "@collab/components/Terminal/theme";
+import "@xterm/xterm/css/xterm.css";
 
 // ---------------------------------------------------------------------------
-// WASM initialization gate
+// GPU renderer flag
 // ---------------------------------------------------------------------------
 
-let ghosttyReady = false;
-async function ensureGhosttyInit() {
-	if (!ghosttyReady) {
-		await initGhostty();
-		ghosttyReady = true;
+let useGpuRenderer = false;
+
+/**
+ * Probe for WebGL2 support and enable the GPU renderer if available.
+ * Call once on startup alongside initPtyDataDispatch().
+ */
+export async function initGpuRenderer() {
+	try {
+		const enabled = await window.shellApi.getGpuRenderer();
+		if (!enabled) {
+			useGpuRenderer = false;
+			console.log("[terminal-embed] GPU renderer disabled by config");
+			return;
+		}
+		// xterm.js WebglAddon handles the WebGL context internally —
+		// just check if WebGL is available at all.
+		const testCanvas = new OffscreenCanvas(1, 1);
+		const gl = testCanvas.getContext("webgl2") || testCanvas.getContext("webgl");
+		if (gl) {
+			useGpuRenderer = true;
+			const loseCtx = gl.getExtension("WEBGL_lose_context");
+			if (loseCtx) loseCtx.loseContext();
+			console.log("[terminal-embed] GPU renderer enabled");
+		}
+	} catch {
+		useGpuRenderer = false;
+		console.log("[terminal-embed] WebGL not available, using DOM fallback");
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Theme (ported from packages/components/src/Terminal/theme.ts)
-// ---------------------------------------------------------------------------
-
-/** @type {import("ghostty-web").ITheme} */
-const darkTheme = {
-	background: "#080808",
-	foreground: "#d4d4d4",
-	cursor: "#d4d4d4",
-	cursorAccent: "#1e1e1e",
-	selectionBackground: "#264f78",
-	black: "#000000",
-	red: "#cd3131",
-	green: "#0dbc79",
-	yellow: "#e5e510",
-	blue: "#2472c8",
-	magenta: "#bc3fbc",
-	cyan: "#11a8cd",
-	white: "#e5e5e5",
-	brightBlack: "#666666",
-	brightRed: "#f14c4c",
-	brightGreen: "#23d18b",
-	brightYellow: "#f5f543",
-	brightBlue: "#3b8eea",
-	brightMagenta: "#d670d6",
-	brightCyan: "#29b8db",
-	brightWhite: "#ffffff",
-};
-
-/** @type {import("ghostty-web").ITheme} */
-const lightTheme = {
-	background: "#f8f8f8",
-	foreground: "#383a42",
-	cursor: "#383a42",
-	cursorAccent: "#ffffff",
-	selectionBackground: "#add6ff",
-	black: "#383a42",
-	red: "#e45649",
-	green: "#50a14f",
-	yellow: "#c18401",
-	blue: "#4078f2",
-	magenta: "#a626a4",
-	cyan: "#0184bc",
-	white: "#fafafa",
-	brightBlack: "#4f525e",
-	brightRed: "#e06c75",
-	brightGreen: "#98c379",
-	brightYellow: "#e5c07b",
-	brightBlue: "#61afef",
-	brightMagenta: "#c678dd",
-	brightCyan: "#56b6c2",
-	brightWhite: "#ffffff",
-};
-
-/** @returns {import("ghostty-web").ITheme} */
-function getTheme() {
-	const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-	return prefersDark ? darkTheme : lightTheme;
 }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Coalesce rapid PTY data events into a single term.write() call. */
 const DATA_BUFFER_FLUSH_MS = 5;
-
 const IS_MAC = window.shellApi.getPlatform() === "darwin";
+const textEncoder = new TextEncoder();
 
 // ---------------------------------------------------------------------------
-// Terminal registry  –  sessionId → TerminalHandle
+// Terminal registry
 // ---------------------------------------------------------------------------
 
 /** @type {Map<string, TerminalHandle>} */
@@ -95,11 +61,11 @@ const registry = new Map();
 /**
  * @typedef {Object} TerminalHandle
  * @property {string} sessionId
- * @property {(data: string|Uint8Array) => void} write  - Feed buffered PTY data
+ * @property {(data: string|Uint8Array) => void} write
  * @property {() => void} focus
  * @property {() => void} blur
  * @property {() => void} dispose
- * @property {Terminal} term  - ghostty-web instance for advanced access
+ * @property {Terminal} term
  */
 
 // ---------------------------------------------------------------------------
@@ -107,43 +73,81 @@ const registry = new Map();
 // ---------------------------------------------------------------------------
 
 /**
- * Create a ghostty-web terminal instance inside the given container element.
+ * Create an xterm.js terminal instance inside the given container element.
+ * Optionally loads the WebglAddon for GPU-accelerated rendering.
  *
- * @param {HTMLElement} container  - DOM element to host the terminal
- * @param {string} sessionId      - PTY session identifier
+ * @param {HTMLElement} container
+ * @param {string} sessionId
  * @param {{ scrollbackData?: string|null, mode?: "tmux"|"sidecar"|"direct", restored?: boolean }} [options]
  * @returns {Promise<TerminalHandle>}
  */
 export async function createTerminal(container, sessionId, options = {}) {
-	await ensureGhosttyInit();
-	const { scrollbackData = null, mode = "direct", restored = false } = options;
+	const { scrollbackData = null, restored = false } = options;
 
-	// -- ghostty-web instance -----------------------------------------------
+	// -- xterm.js instance -----------------------------------------------------
 
 	const term = new Terminal({
 		theme: getTheme(),
-		fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+		fontFamily: 'Menlo, Monaco, "Cascadia Mono", Consolas, "Courier New", monospace',
 		fontSize: 12,
 		fontWeight: "300",
 		fontWeightBold: "500",
 		cursorBlink: true,
 		scrollback: 200000,
+		allowProposedApi: true,
 	});
 
 	const fit = new FitAddon();
 	term.loadAddon(fit);
 	term.open(container);
 
+	// Force 2x rendering for sharper text with the WebGL addon.
+	// The WebGL canvas renders at double resolution and CSS scales it down,
+	// producing crisper glyphs similar to native ClearType rendering.
+	if (useGpuRenderer && window.devicePixelRatio <= 1) {
+		term.options.devicePixelRatio = 2;
+	}
+
+	// Unicode 11 support for proper emoji/wide character handling
+	const unicode11 = new Unicode11Addon();
+	term.loadAddon(unicode11);
+	term.unicode.activeVersion = "11";
+
+	// -- GPU renderer (xterm.js WebglAddon) ------------------------------------
+	// WebglAddon provides hardware-accelerated rendering via WebGL, avoiding
+	// the DOM renderer's partial-paint artifacts during rapid writes.
+
+	let webglAddon = null;
+
+	if (useGpuRenderer) {
+		try {
+			webglAddon = new WebglAddon();
+			webglAddon.onContextLoss(() => {
+				console.warn("[terminal-embed] WebGL context lost, falling back to DOM renderer");
+				webglAddon?.dispose();
+				webglAddon = null;
+			});
+			term.loadAddon(webglAddon);
+			console.log("[terminal-embed] WebGL renderer loaded");
+		} catch (err) {
+			console.warn("[terminal-embed] WebGL addon failed, using DOM fallback:", err);
+			webglAddon = null;
+		}
+	}
+
+	// -- Scroll handling -------------------------------------------------------
+	// Prevent wheel events from bubbling to the canvas pan/zoom handler.
+	// tmux mouse mode handles scrollback via mouse wheel natively.
+	// Hold Shift while clicking/dragging to select text (bypasses tmux mouse capture).
+	const handleWheel = (e) => { e.stopPropagation(); };
+	container.addEventListener("wheel", handleWheel, { passive: true });
+
 	// Delay initial fit until layout pass has finished
 	requestAnimationFrame(() => {
 		requestAnimationFrame(() => fit.fit());
 	});
 
-	// Note: focus is managed by tile-manager.js (focusCanvasTile / blurCanvasTileGuest).
-	// We do NOT register a window "focus" listener here because multiple terminals
-	// would race to steal focus on window re-focus.
-
-	// -- Restore / initial content ------------------------------------------
+	// -- Restore / initial content ---------------------------------------------
 
 	if (!restored) {
 		term.write("\x1b[38;2;100;100;100mStarting...\x1b[0m");
@@ -153,7 +157,7 @@ export async function createTerminal(container, sessionId, options = {}) {
 		term.write(scrollbackData);
 	}
 
-	// -- Data buffering -----------------------------------------------------
+	// -- Data buffering --------------------------------------------------------
 
 	/** @type {Uint8Array[]} */
 	let dataBuffer = [];
@@ -172,11 +176,11 @@ export async function createTerminal(container, sessionId, options = {}) {
 
 		if (firstData) {
 			firstData = false;
-			if (restored && mode === "tmux") {
-				term.write("\x1b[2J\x1b[H");
-			} else if (!restored) {
-				term.reset();
-			}
+			// Clear the "Starting..." placeholder (or tmux stale frame).
+			// Avoid term.reset() — it destroys the WebGL texture atlas and
+			// can leave the renderer in a broken state where subsequent
+			// writes are invisible.
+			term.write("\x1b[2J\x1b[H");
 		}
 		for (const chunk of chunks) {
 			term.write(chunk);
@@ -188,14 +192,14 @@ export async function createTerminal(container, sessionId, options = {}) {
 	 * @param {string|Uint8Array} data
 	 */
 	const writeBuffered = (data) => {
-		const chunk = typeof data === "string" ? new TextEncoder().encode(data) : data;
+		const chunk = typeof data === "string" ? textEncoder.encode(data) : data;
 		dataBuffer.push(chunk);
 		if (flushTimer === undefined) {
 			flushTimer = window.setTimeout(flushData, DATA_BUFFER_FLUSH_MS);
 		}
 	};
 
-	// -- Input handling -----------------------------------------------------
+	// -- Input handling --------------------------------------------------------
 
 	const copySelectionToClipboard = () => {
 		const selection = term.getSelection();
@@ -265,7 +269,7 @@ export async function createTerminal(container, sessionId, options = {}) {
 		window.shellApi.ptyWrite(sessionId, data);
 	});
 
-	// -- Clipboard events ---------------------------------------------------
+	// -- Clipboard events ------------------------------------------------------
 
 	const handleCopy = (event) => {
 		const selection = term.getSelection();
@@ -292,29 +296,41 @@ export async function createTerminal(container, sessionId, options = {}) {
 	container.addEventListener("copy", handleCopy, true);
 	container.addEventListener("paste", handlePaste, true);
 
-	// -- Resize observer (debounced via rAF) --------------------------------
+	// -- Resize observer -------------------------------------------------------
+	// fit.fit() is expensive: it forces a synchronous DOM reflow, recalculates
+	// cols/rows, and triggers a full terminal re-layout + re-render.  During
+	// continuous tile-drag resizing this was called on every animation frame,
+	// which is the main cause of choppiness.
+	//
+	// Strategy: debounce fit() so it only fires once resize activity pauses
+	// (100ms).  The CSS transform resize remains smooth because tile-renderer
+	// handles that independently via GPU-composited translate3d/scale.
+
+	const FIT_DEBOUNCE_MS = 100;
+	let fitTimer = 0;
 
 	term.onResize(({ cols, rows }) => {
 		window.shellApi.ptyResize(sessionId, cols, rows);
 	});
 
-	let rafId = 0;
 	const resizeObserver = new ResizeObserver((entries) => {
 		const { width, height } = entries[0].contentRect;
 		if (width > 0 && height > 0) {
-			cancelAnimationFrame(rafId);
-			rafId = requestAnimationFrame(() => fit.fit());
+			clearTimeout(fitTimer);
+			fitTimer = window.setTimeout(() => fit.fit(), FIT_DEBOUNCE_MS);
 		}
 	});
 	resizeObserver.observe(container);
 
-	// -- Theme change listener ----------------------------------------------
+	// -- Theme change listener -------------------------------------------------
 
 	const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-	const onThemeChange = () => { term.options.theme = getTheme(); };
+	const onThemeChange = () => {
+		term.options.theme = getTheme();
+	};
 	mediaQuery.addEventListener("change", onThemeChange);
 
-	// -- Build handle -------------------------------------------------------
+	// -- Build handle ----------------------------------------------------------
 
 	/** @type {TerminalHandle} */
 	const handle = {
@@ -324,22 +340,37 @@ export async function createTerminal(container, sessionId, options = {}) {
 		blur: () => term.blur(),
 		term,
 		dispose() {
-			// Flush any remaining buffered data
 			if (flushTimer !== undefined) {
 				clearTimeout(flushTimer);
 				flushData();
 			}
-			cancelAnimationFrame(rafId);
+			clearTimeout(fitTimer);
 			mediaQuery.removeEventListener("change", onThemeChange);
 			resizeObserver.disconnect();
+			container.removeEventListener("wheel", handleWheel);
 			container.removeEventListener("copy", handleCopy, true);
 			container.removeEventListener("paste", handlePaste, true);
+			if (webglAddon) {
+				webglAddon.dispose();
+				webglAddon = null;
+			}
 			term.dispose();
 			registry.delete(sessionId);
+			earlyDataBuffers.delete(sessionId);
 		},
 	};
 
 	registry.set(sessionId, handle);
+
+	// Flush any PTY data that arrived before the terminal was registered
+	const early = earlyDataBuffers.get(sessionId);
+	if (early) {
+		earlyDataBuffers.delete(sessionId);
+		for (const chunk of early) {
+			handle.write(chunk);
+		}
+	}
+
 	return handle;
 }
 
@@ -347,12 +378,6 @@ export async function createTerminal(container, sessionId, options = {}) {
 // getTerminal
 // ---------------------------------------------------------------------------
 
-/**
- * Look up an existing terminal handle by session ID.
- *
- * @param {string} sessionId
- * @returns {TerminalHandle|undefined}
- */
 export function getTerminal(sessionId) {
 	return registry.get(sessionId);
 }
@@ -361,11 +386,6 @@ export function getTerminal(sessionId) {
 // disposeTerminal
 // ---------------------------------------------------------------------------
 
-/**
- * Dispose a specific terminal and remove it from the registry.
- *
- * @param {string} sessionId
- */
 export function disposeTerminal(sessionId) {
 	const handle = registry.get(sessionId);
 	if (handle) {
@@ -377,15 +397,27 @@ export function disposeTerminal(sessionId) {
 // initPtyDataDispatch
 // ---------------------------------------------------------------------------
 
-/**
- * Wire up the global PTY data and exit listeners. Call once on startup.
- * Routes incoming PTY data to the correct terminal handle's write buffer.
- */
+/** @type {Map<string, Array<string|Uint8Array>>} */
+const earlyDataBuffers = new Map();
+
 export function initPtyDataDispatch() {
+	// Expose registry for DevTools debugging only
+	if (typeof process === "undefined" || process.env?.NODE_ENV !== "production") {
+		window.__terminalRegistry = registry;
+	}
+
 	window.shellApi.onPtyData((sessionId, data) => {
 		const handle = registry.get(sessionId);
 		if (handle) {
 			handle.write(data);
+		} else {
+			// Buffer data that arrives before createTerminal finishes
+			let buf = earlyDataBuffers.get(sessionId);
+			if (!buf) {
+				buf = [];
+				earlyDataBuffers.set(sessionId, buf);
+			}
+			buf.push(data);
 		}
 	});
 

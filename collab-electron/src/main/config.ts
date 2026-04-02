@@ -141,10 +141,14 @@ export function getTerminalTarget(): TerminalTarget {
   return isTerminalTarget(target) ? target : "auto";
 }
 
-export function getInProcessTerminals(): boolean {
+function getBoolPref(key: string, defaultValue: boolean): boolean {
   const config = loadConfig();
-  const pref = getPref(config, "inProcessTerminals");
+  const pref = getPref(config, key);
   if (pref === true || pref === false) return pref;
-  // Default: true on Windows, false on macOS (until validated)
-  return process.platform === "win32";
+  return defaultValue;
 }
+
+export const getInProcessTerminals = () =>
+  getBoolPref("inProcessTerminals", process.platform === "win32");
+export const getGpuRenderer = () => getBoolPref("gpuRenderer", true);
+export const getUncapFrameRate = () => getBoolPref("uncapFrameRate", false);

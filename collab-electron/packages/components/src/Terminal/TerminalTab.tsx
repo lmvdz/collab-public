@@ -180,10 +180,11 @@ function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: Ter
 			flushTimer = undefined;
 			if (firstData) {
 				firstData = false;
-				if (restored && mode === "tmux") {
+				// Clear the "Starting..." placeholder or stale tmux frame.
+				// Use escape sequences instead of term.reset() to avoid
+				// destroying the WebGL texture atlas.
+				if (!restored || (restored && mode === "tmux")) {
 					term.write("\x1b[2J\x1b[H");
-				} else if (!restored) {
-					term.reset();
 				}
 			}
 			for (const chunk of chunks) {
@@ -205,6 +206,14 @@ function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: Ter
 			}
 		};
 		window.api.onPtyData(sessionId, handleData);
+
+		// DEBUG: watchdog to detect missing PTY data
+		const dataWatchdog = window.setTimeout(() => {
+			if (firstData) {
+				term.write(`\r\n\x1b[33m[debug] No PTY data after 3 s — session ${sessionId}\x1b[0m\r\n`);
+				term.write(`\x1b[33m[debug] Check main-process console for [pty:] logs\x1b[0m\r\n`);
+			}
+		}, 3000);
 
 		term.onResize(({ cols, rows }) => {
 			window.api.ptyResize(sessionId, cols, rows);
@@ -261,6 +270,7 @@ function TerminalTab({ sessionId, visible, restored, scrollbackData, mode }: Ter
 		mediaQuery.addEventListener("change", onThemeChange);
 
 		return () => {
+			clearTimeout(dataWatchdog);
 			if (flushTimer !== undefined) {
 				clearTimeout(flushTimer);
 				flushData();

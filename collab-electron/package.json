@@ -140,7 +140,6 @@
 		"electron-log": "5.4.3",
 		"electron-updater": "6.8.3",
 		"front-matter": "4.0.2",
-		"ghostty-web": "^0.4.0",
 		"ignore": "7.0.5",
 		"katex": "0.16.33",
 		"lucide-react": "0.576.0",

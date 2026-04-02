@@ -4,6 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { getTheme } from "@collab/components/Terminal/theme";
 import "@xterm/xterm/css/xterm.css";
+import { setTerminalCount } from "./perf-overlay.js";
 
 // ---------------------------------------------------------------------------
 // GPU renderer flag
@@ -357,10 +358,12 @@ export async function createTerminal(container, sessionId, options = {}) {
 			term.dispose();
 			registry.delete(sessionId);
 			earlyDataBuffers.delete(sessionId);
+			setTerminalCount(registry.size);
 		},
 	};
 
 	registry.set(sessionId, handle);
+	setTerminalCount(registry.size);
 
 	// Flush any PTY data that arrived before the terminal was registered
 	const early = earlyDataBuffers.get(sessionId);

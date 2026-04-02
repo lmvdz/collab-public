@@ -737,6 +737,13 @@ function PerformancePane() {
         </div>
         <ToggleSwitch enabled={uncapFrameRate} onToggle={(v) => { void handleFpsToggle(v); }} />
       </div>
+
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium">Performance overlay</p>
+        <p className="text-xs text-muted-foreground">
+          Press <kbd className="px-1 py-0.5 rounded text-xs font-mono" style={{ backgroundColor: "color-mix(in srgb, var(--foreground) 10%, transparent)" }}>F3</kbd> in the shell window to toggle the FPS counter, frame time graph, and GPU/CPU timing overlay.
+        </p>
+      </div>
     </div>
   );
 }

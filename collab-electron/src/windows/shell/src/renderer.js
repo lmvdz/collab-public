@@ -14,6 +14,7 @@ import { createCanvasRpc } from "./canvas-rpc.js";
 import { createTileManager } from "./tile-manager.js";
 import { updateTileTitle } from "./tile-renderer.js";
 import { normalizeCommandName } from "@collab/shared/path-utils";
+import { initKeyboardShortcut as initPerfOverlay } from "./perf-overlay.js";
 
 const CANVAS_DBLCLICK_SUPPRESS_MS = 500;
 const IS_WINDOWS = window.shellApi.getPlatform() === "win32";
@@ -836,6 +837,9 @@ async function init() {
 	}
 
 	window.shellApi.onShortcut(handleShortcut);
+
+	// -- Performance overlay (F3) --
+	initPerfOverlay();
 
 	window.addEventListener("keydown", (event) => {
 		if (!isFocusSearchShortcut(event)) return;

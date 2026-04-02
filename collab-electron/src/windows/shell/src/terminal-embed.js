@@ -4,7 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { getTheme } from "@collab/components/Terminal/theme";
 import "@xterm/xterm/css/xterm.css";
-import { setTerminalCount } from "./perf-overlay.js";
+import { setTerminalCount, attachGL, markCpuStart, markCpuEnd } from "./perf-overlay.js";
 
 // ---------------------------------------------------------------------------
 // GPU renderer flag
@@ -130,6 +130,18 @@ export async function createTerminal(container, sessionId, options = {}) {
 			});
 			term.loadAddon(webglAddon);
 			console.log("[terminal-embed] WebGL renderer loaded");
+
+			// Attach the WebGL context to the perf overlay for GPU timer queries.
+			// The WebglAddon stores its context as _gl on the renderer.
+			requestAnimationFrame(() => {
+				try {
+					const renderer = webglAddon._renderer;
+					const glCtx = renderer?._gl;
+					if (glCtx) attachGL(glCtx);
+				} catch {
+					// WebglAddon internals may change — non-fatal.
+				}
+			});
 		} catch (err) {
 			console.warn("[terminal-embed] WebGL addon failed, using DOM fallback:", err);
 			webglAddon = null;
@@ -183,9 +195,11 @@ export async function createTerminal(container, sessionId, options = {}) {
 			// writes are invisible.
 			term.write("\x1b[2J\x1b[H");
 		}
+		markCpuStart();
 		for (const chunk of chunks) {
 			term.write(chunk);
 		}
+		markCpuEnd();
 	};
 
 	/**

@@ -10,6 +10,7 @@ import {
   getTerminfoDir,
   getTmuxSpawnSpec,
   tmuxExec,
+  tmuxExecAsync,
   tmuxExecForTarget,
   tmuxSessionName,
   writeSessionMeta,
@@ -85,11 +86,16 @@ export function registerShellWebContents(id: number): void {
  * Return the webContents id that should receive PTY data/exit events.
  * When in-process terminals are enabled and the shell window is registered,
  * route to the shell window; otherwise use the original sender.
+ *
+ * Called only at session creation/reconnection (not on every data event),
+ * so reading config from disk here is fine.
  */
 function getEffectiveSender(senderWebContentsId?: number): number | undefined {
-  if (getInProcessTerminals() && shellWebContentsId != null) {
+  const inProc = getInProcessTerminals();
+  if (inProc && shellWebContentsId != null) {
     return shellWebContentsId;
   }
+  console.log(`[pty:route] inProcess=${inProc}, shell=${shellWebContentsId}, sender=${senderWebContentsId} → using sender`);
   return senderWebContentsId;
 }
 
@@ -170,20 +176,20 @@ function terminalName(target?: TerminalTarget): string {
   return "xterm-256color";
 }
 
-function ensureTmuxSessionAppearance(
+async function ensureTmuxSessionAppearance(
   target: TerminalTarget | undefined,
   sessionName: string,
-): void {
+): Promise<void> {
   if (process.platform === "win32" && target?.startsWith("wsl:")) {
     try {
-      tmuxExecForTarget(
+      await tmuxExecAsync(
         target,
         "set-option",
         "-g",
         "default-terminal",
         "screen-256color",
       );
-      tmuxExecForTarget(
+      await tmuxExecAsync(
         target,
         "set-option",
         "-ga",
@@ -195,7 +201,7 @@ function ensureTmuxSessionAppearance(
     }
   }
   try {
-    tmuxExecForTarget(
+    await tmuxExecAsync(
       target,
       "set-option",
       "-t",
@@ -220,17 +226,27 @@ function getWebContents(): typeof import("electron").webContents | null {
   }
 }
 
+let _sendLogCount = 0;
+
 function sendToSender(
   senderWebContentsId: number | undefined,
   channel: string,
   payload: unknown,
 ): void {
-  if (senderWebContentsId == null) return;
+  if (senderWebContentsId == null) {
+    if (channel === "pty:data" && _sendLogCount++ < 3) console.warn("[pty:send] sender is null");
+    return;
+  }
   const wc = getWebContents();
-  if (!wc) return;
+  if (!wc) {
+    if (channel === "pty:data" && _sendLogCount++ < 3) console.warn("[pty:send] webContents module unavailable");
+    return;
+  }
   const sender = wc.fromId(senderWebContentsId);
   if (sender && !sender.isDestroyed()) {
     sender.send(channel, payload);
+  } else if (channel === "pty:data" && _sendLogCount++ < 3) {
+    console.warn(`[pty:send] webContents id=${senderWebContentsId} not found or destroyed`);
   }
 }
 
@@ -469,8 +485,12 @@ function attachClient(
 
   const disposables: IDisposable[] = [];
 
+  let _attachDataCount = 0;
   disposables.push(
     ptyProcess.onData((data: string) => {
+      if (_attachDataCount++ < 3) {
+        console.log(`[pty:attach] sessionId=${sessionId} data event #${_attachDataCount}, effectiveSender=${effectiveSender}, bytes=${data.length}`);
+      }
       sendToSender(
         effectiveSender,
         "pty:data",
@@ -482,6 +502,7 @@ function attachClient(
 
   disposables.push(
     ptyProcess.onExit(() => {
+      console.log(`[pty:attach] sessionId=${sessionId} exited, effectiveSender=${effectiveSender}`);
       if (shuttingDown) {
         sessions.delete(sessionId);
         return;
@@ -660,7 +681,7 @@ export async function createSession(
     const tmuxTarget = resolvedTarget.target;
     const tmuxCwd = resolvedTarget.cwdGuestPath ?? resolvedTarget.cwdHostPath;
 
-    tmuxExecForTarget(
+    await tmuxExecAsync(
       tmuxTarget,
       "new-session", "-d",
       "-s", name,
@@ -669,7 +690,7 @@ export async function createSession(
       "-y", String(r),
     );
 
-    tmuxExecForTarget(
+    await tmuxExecAsync(
       tmuxTarget,
       "set-environment",
       "-t",
@@ -677,8 +698,9 @@ export async function createSession(
       "COLLAB_PTY_SESSION_ID",
       sessionId,
     );
+
     if (!(process.platform === "win32" && tmuxTarget.startsWith("wsl:"))) {
-      tmuxExecForTarget(
+      await tmuxExecAsync(
         tmuxTarget,
         "set-environment",
         "-t",
@@ -687,9 +709,16 @@ export async function createSession(
         shell,
       );
     }
-    ensureTmuxSessionAppearance(tmuxTarget, name);
+    await ensureTmuxSessionAppearance(tmuxTarget, name);
 
     attachClient(sessionId, c, r, senderWebContentsId, tmuxTarget);
+
+    // DEBUG: inject a test message directly to verify the IPC channel works
+    sendToSender(
+      getEffectiveSender(senderWebContentsId),
+      "pty:data",
+      { sessionId, data: "\r\n[DEBUG] main→webview channel OK\r\n" },
+    );
 
     writeSessionMeta(
       sessionId,
@@ -725,6 +754,13 @@ export async function createSession(
       c,
       r,
       senderWebContentsId,
+    );
+
+    // DEBUG: inject a test message directly to verify the IPC channel works
+    sendToSender(
+      getEffectiveSender(senderWebContentsId),
+      "pty:data",
+      { sessionId, data: "\r\n[DEBUG] main→webview channel OK (direct)\r\n" },
     );
 
     writeSessionMeta(
@@ -900,7 +936,7 @@ export async function reconnectSession(
   const target = tmuxTargetForSession(sessionId);
 
   try {
-    tmuxExecForTarget(target, "has-session", "-t", name);
+    await tmuxExecAsync(target, "has-session", "-t", name);
   } catch {
     deleteSessionMeta(sessionId);
     throw new Error(`tmux session ${name} not found`);
@@ -908,7 +944,7 @@ export async function reconnectSession(
 
   let scrollback = "";
   try {
-    const raw = tmuxExecForTarget(
+    const raw = await tmuxExecAsync(
       target,
       "capture-pane", "-t", name,
       "-p", "-e", "-S", "-200000",
@@ -918,11 +954,11 @@ export async function reconnectSession(
     // Proceed without scrollback
   }
 
-  ensureTmuxSessionAppearance(target, name);
+  await ensureTmuxSessionAppearance(target, name);
   attachClient(sessionId, cols, rows, senderWebContentsId, target);
 
   try {
-    tmuxExecForTarget(
+    await tmuxExecAsync(
       target,
       "resize-window", "-t", name,
       "-x", String(cols), "-y", String(rows),
@@ -979,6 +1015,15 @@ export function sendRawKeys(
   tmuxExecForTarget(tmuxTargetForSession(sessionId), "send-keys", "-l", "-t", name, data);
 }
 
+/**
+ * Pending tmux resize timers keyed by sessionId.  During rapid resize events
+ * (e.g. tile drag) we debounce the tmux resize-window call to avoid spawning
+ * dozens of wsl.exe processes that each block for hundreds of ms.  The PTY
+ * itself is resized immediately — only the tmux bookkeeping is debounced.
+ */
+const tmuxResizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const TMUX_RESIZE_DEBOUNCE_MS = 150;
+
 export async function resizeSession(
   sessionId: string,
   cols: number,
@@ -1003,16 +1048,24 @@ export async function resizeSession(
   session.pty.resize(cols, rows);
 
   if (backend === "tmux") {
-    const name = tmuxSessionName(sessionId);
-    try {
-      tmuxExecForTarget(
-        tmuxTargetForSession(sessionId),
-        "resize-window", "-t", name,
-        "-x", String(cols), "-y", String(rows),
-      );
-    } catch {
-      // Non-fatal
-    }
+    // Debounce the tmux resize-window call and run it async so it never
+    // blocks the main process.
+    const prev = tmuxResizeTimers.get(sessionId);
+    if (prev) clearTimeout(prev);
+    tmuxResizeTimers.set(
+      sessionId,
+      setTimeout(() => {
+        tmuxResizeTimers.delete(sessionId);
+        const name = tmuxSessionName(sessionId);
+        tmuxExecAsync(
+          tmuxTargetForSession(sessionId),
+          "resize-window", "-t", name,
+          "-x", String(cols), "-y", String(rows),
+        ).catch(() => {
+          // Non-fatal
+        });
+      }, TMUX_RESIZE_DEBOUNCE_MS),
+    );
   }
 }
 

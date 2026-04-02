@@ -117,6 +117,9 @@ export function getTmuxSpawnSpec(
   };
 }
 
+/** WSL cold-starts can take 10-15s; 5s is too tight. */
+const TMUX_EXEC_TIMEOUT_MS = 30_000;
+
 export function tmuxExecForTarget(
   target: TerminalTarget | undefined,
   ...args: string[]
@@ -128,7 +131,7 @@ export function tmuxExecForTarget(
       spec.args,
       {
         encoding: "utf8",
-        timeout: 5000,
+        timeout: TMUX_EXEC_TIMEOUT_MS,
         env: spec.env,
         windowsHide: process.platform === "win32",
       },
@@ -171,7 +174,7 @@ export function tmuxExecAsync(
       spec.args,
       {
         encoding: "utf8",
-        timeout: 5000,
+        timeout: TMUX_EXEC_TIMEOUT_MS,
         env: spec.env,
         windowsHide: process.platform === "win32",
       },

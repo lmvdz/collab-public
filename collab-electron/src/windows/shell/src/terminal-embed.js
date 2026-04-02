@@ -4,7 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { getTheme } from "@collab/components/Terminal/theme";
 import "@xterm/xterm/css/xterm.css";
-import { setTerminalCount, attachGL, markCpuStart, markCpuEnd } from "./perf-overlay.js";
+import { setTerminalCount, setInProcessMode, attachGL, markCpuStart, markCpuEnd, gpuTimerBegin, gpuTimerEnd } from "./perf-overlay.js";
 
 // ---------------------------------------------------------------------------
 // GPU renderer flag
@@ -152,11 +152,12 @@ export async function createTerminal(container, sessionId, options = {}) {
 		}
 	}
 
-	// -- Perf overlay: CPU render timing ----------------------------------------
+	// -- Perf overlay: CPU/GPU render timing ------------------------------------
 	// term.onRender fires after xterm actually processes and paints queued
 	// data. We call markCpuEnd here so the perf overlay measures the full
 	// parse+render cost, not just the near-instant term.write() enqueue.
-	term.onRender(() => { markCpuEnd(); });
+	// GPU timer queries bracket the same window for GPU-side cost.
+	term.onRender(() => { markCpuEnd(); gpuTimerEnd(); });
 
 	// -- Scroll handling -------------------------------------------------------
 	// Prevent wheel events from bubbling to the canvas pan/zoom handler.
@@ -205,10 +206,11 @@ export async function createTerminal(container, sessionId, options = {}) {
 			// writes are invisible.
 			term.write("\x1b[2J\x1b[H");
 		}
-		// Mark the start of CPU work. markCpuEnd is called from onRender
-		// (below) which fires after xterm actually processes and paints the
-		// data — measuring the real parse+render cost, not just the enqueue.
+		// Mark the start of CPU/GPU work. markCpuEnd + gpuTimerEnd are called
+		// from onRender (above) which fires after xterm actually processes and
+		// paints the data — measuring the real parse+render cost.
 		markCpuStart();
+		gpuTimerBegin();
 		for (const chunk of chunks) {
 			term.write(chunk);
 		}

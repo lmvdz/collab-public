@@ -52,37 +52,37 @@ export async function loadState(): Promise<CanvasState | null> {
   }
 }
 
-let saveInFlight: Promise<void> | null = null;
+let saving = false;
+let pendingState: CanvasState | null = null;
 
 export async function saveState(state: CanvasState): Promise<void> {
-  // Serialize concurrent saves — on Windows, overlapping renames to the same
-  // destination race and fail with EPERM.
-  while (saveInFlight) {
-    try { await saveInFlight; } catch { /* previous save failed, proceed */ }
-  }
+  pendingState = state; // always keep latest
 
-  const work = (async () => {
-    if (!existsSync(STATE_DIR)) {
-      await mkdir(STATE_DIR, { recursive: true });
-    }
-    const tmp = join(
-      tmpdir(),
-      `canvas-state-${crypto.randomUUID()}.json`,
-    );
-    const json = JSON.stringify(state, null, 2);
-    await writeFile(tmp, json, "utf-8");
-    try {
-      await rename(tmp, STATE_FILE);
-    } catch {
-      // rename can fail on Windows when another process holds the target.
-      // Fall back to a direct overwrite.
-      await writeFile(STATE_FILE, json, "utf-8");
-    }
-  })();
-  saveInFlight = work;
+  if (saving) return; // drainer will pick up pendingState
+
+  saving = true;
   try {
-    await work;
+    while (pendingState !== null) {
+      const toSave = pendingState;
+      pendingState = null; // clear before async work
+
+      if (!existsSync(STATE_DIR)) {
+        await mkdir(STATE_DIR, { recursive: true });
+      }
+      const tmp = join(
+        tmpdir(),
+        `canvas-state-${crypto.randomUUID()}.json`,
+      );
+      const json = JSON.stringify(toSave, null, 2);
+      await writeFile(tmp, json, "utf-8");
+      try {
+        await rename(tmp, STATE_FILE);
+      } catch {
+        // rename can fail on Windows when another process holds the target.
+        await writeFile(STATE_FILE, json, "utf-8");
+      }
+    }
   } finally {
-    if (saveInFlight === work) saveInFlight = null;
+    saving = false;
   }
 }

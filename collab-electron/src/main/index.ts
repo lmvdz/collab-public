@@ -583,14 +583,18 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:write",
-  (_event, { sessionId, data }: { sessionId: string; data: string }) =>
-    pty.writeToSession(sessionId, data),
+  (_event, { sessionId, data }: { sessionId: string; data: string }) => {
+    if (typeof data !== "string" || data.length > 1_048_576) return;
+    pty.writeToSession(sessionId, data);
+  },
 );
 
 ipcMain.handle(
   "pty:send-raw-keys",
-  (_event, { sessionId, data }: { sessionId: string; data: string }) =>
-    pty.sendRawKeys(sessionId, data),
+  (_event, { sessionId, data }: { sessionId: string; data: string }) => {
+    if (typeof data !== "string" || data.length > 1_048_576) return;
+    pty.sendRawKeys(sessionId, data);
+  },
 );
 
 ipcMain.handle(

@@ -395,7 +395,7 @@ export async function createTerminal(container, sessionId, options = {}) {
 	const early = earlyDataBuffers.get(sessionId);
 	if (early) {
 		earlyDataBuffers.delete(sessionId);
-		for (const chunk of early) {
+		for (const chunk of early.chunks) {
 			handle.write(chunk);
 		}
 	}
@@ -426,27 +426,42 @@ export function disposeTerminal(sessionId) {
 // initPtyDataDispatch
 // ---------------------------------------------------------------------------
 
-/** @type {Map<string, Array<string|Uint8Array>>} */
+/** @type {Map<string, { chunks: Array<string|Uint8Array>, bytes: number }>} */
 const earlyDataBuffers = new Map();
+const EARLY_BUFFER_MAX_BYTES = 512 * 1024; // 512 KB per session
+const EARLY_BUFFER_TIMEOUT_MS = 30_000;    // cleanup after 30s if never consumed
 
 export function initPtyDataDispatch() {
-	// Expose registry for DevTools debugging only
-	if (typeof process === "undefined" || process.env?.NODE_ENV !== "production") {
-		window.__terminalRegistry = registry;
-	}
+	// Expose registry for DevTools debugging only in development builds.
+	// In Electron, `process` is always defined, so check import.meta or
+	// NODE_ENV directly.  The `app.isPackaged` flag is not available in
+	// the renderer, so we rely on NODE_ENV which electron-vite sets at
+	// build time.
+	try {
+		if (process.env?.NODE_ENV !== "production") {
+			window.__terminalRegistry = registry;
+		}
+	} catch { /* process may not exist in some test envs */ }
 
 	window.shellApi.onPtyData((sessionId, data) => {
 		const handle = registry.get(sessionId);
 		if (handle) {
 			handle.write(data);
 		} else {
-			// Buffer data that arrives before createTerminal finishes
-			let buf = earlyDataBuffers.get(sessionId);
-			if (!buf) {
-				buf = [];
-				earlyDataBuffers.set(sessionId, buf);
+			// Buffer data that arrives before createTerminal finishes.
+			// Cap total bytes to prevent unbounded growth if init fails.
+			let entry = earlyDataBuffers.get(sessionId);
+			if (!entry) {
+				entry = { chunks: [], bytes: 0 };
+				earlyDataBuffers.set(sessionId, entry);
+				// Auto-cleanup if the terminal is never created
+				setTimeout(() => earlyDataBuffers.delete(sessionId), EARLY_BUFFER_TIMEOUT_MS);
 			}
-			buf.push(data);
+			const len = typeof data === "string" ? data.length : data.byteLength;
+			if (entry.bytes < EARLY_BUFFER_MAX_BYTES) {
+				entry.chunks.push(data);
+				entry.bytes += len;
+			}
 		}
 	});
 

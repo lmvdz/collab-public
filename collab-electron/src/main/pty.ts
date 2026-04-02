@@ -4,6 +4,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as net from "node:net";
 import * as crypto from "crypto";
+
+/** Clamp terminal dimensions to safe bounds for node-pty / conpty. */
+function clampDims(cols: number, rows: number): [number, number] {
+  return [
+    Math.max(2, Math.min(Math.round(cols || 80), 500)),
+    Math.max(1, Math.min(Math.round(rows || 24), 300)),
+  ];
+}
 import { type IDisposable } from "node-pty";
 import { displayBasename } from "@collab/shared/path-utils";
 import {
@@ -604,8 +612,7 @@ export async function createSession(
   cwdGuestPath?: string;
 }> {
   const resolvedCwd = cwd || os.homedir();
-  const c = cols || 80;
-  const r = rows || 24;
+  const [c, r] = clampDims(cols, rows);
 
   const mode = getTerminalMode();
 
@@ -622,11 +629,16 @@ export async function createSession(
       "-y", String(r),
     );
 
-    tmuxExec("set-environment", "-t", name, "COLLAB_PTY_SESSION_ID", sessionId);
-    if (tileId) {
-      tmuxExec("set-environment", "-t", name, "COLLAB_TILE_ID", tileId);
+    try {
+      tmuxExec("set-environment", "-t", name, "COLLAB_PTY_SESSION_ID", sessionId);
+      if (tileId) {
+        tmuxExec("set-environment", "-t", name, "COLLAB_TILE_ID", tileId);
+      }
+      tmuxExec("set-environment", "-t", name, "SHELL", shell);
+    } catch {
+      // Under WSL, the tmux server may not have registered the session yet.
+      // The terminal will still work — these env vars are nice-to-have.
     }
-    tmuxExec("set-environment", "-t", name, "SHELL", shell);
 
     attachClient(sessionId, c, r, senderWebContentsId);
 
@@ -812,8 +824,8 @@ function stripTrailingBlanks(text: string): string {
 
 export async function reconnectSession(
   sessionId: string,
-  cols: number,
-  rows: number,
+  rawCols: number,
+  rawRows: number,
   senderWebContentsId: number,
 ): Promise<{
   sessionId: string;
@@ -830,6 +842,7 @@ export async function reconnectSession(
 }> {
   // Route based on the backend that originally created this session.
   // Sessions without a backend field are legacy tmux sessions.
+  const [cols, rows] = clampDims(rawCols, rawRows);
   const meta = readSessionMeta(sessionId);
   const backend = sessionBackend(sessionId);
 
@@ -840,7 +853,11 @@ export async function reconnectSession(
       throw new Error(`Direct session ${sessionId} not found`);
     }
 
-    session.pty.resize(cols, rows);
+    try {
+      session.pty.resize(cols, rows);
+    } catch {
+      // pty already exited — ignore resize
+    }
 
     return withOptionalFields({
       sessionId,
@@ -996,9 +1013,10 @@ const TMUX_RESIZE_DEBOUNCE_MS = 150;
 
 export async function resizeSession(
   sessionId: string,
-  cols: number,
-  rows: number,
+  rawCols: number,
+  rawRows: number,
 ): Promise<void> {
+  const [cols, rows] = clampDims(rawCols, rawRows);
   const backend = sessionBackend(sessionId);
   if (backend === "sidecar") {
     try {
@@ -1015,7 +1033,14 @@ export async function resizeSession(
 
   const session = sessions.get(sessionId);
   if (!session) return;
-  session.pty.resize(cols, rows);
+  try {
+    session.pty.resize(cols, rows);
+  } catch {
+    // The pty may have exited between the session lookup and the resize call.
+    // node-pty throws if the pty is already dead — silently ignore.
+    sessions.delete(sessionId);
+    return;
+  }
 
   if (backend === "tmux") {
     // Debounce the tmux resize-window call and run it async so it never

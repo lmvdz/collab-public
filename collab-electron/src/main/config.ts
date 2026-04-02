@@ -100,11 +100,43 @@ export function getPref(
   return config.ui[key] ?? null;
 }
 
+/** Known preference keys that may be written via IPC. */
+const ALLOWED_PREF_KEYS = new Set([
+  "theme",
+  "canvasOpacity",
+  "terminalMode",
+  "terminalTarget",
+  "terminalBackend",
+  "inProcessTerminals",
+  "gpuRenderer",
+  "uncapFrameRate",
+  "collab:nav-view-mode",
+  "collab:nav-sort-mode",
+  "collab:nav-tree-sort-mode",
+  "collab:nav-feed-sort-mode",
+]);
+
+/** Key prefixes for dynamically-named prefs (e.g. panel-width-nav). */
+const ALLOWED_PREF_PREFIXES = [
+  "panel-width-",
+  "panel-visible-",
+];
+
+function isAllowedPrefKey(key: string): boolean {
+  if (ALLOWED_PREF_KEYS.has(key)) return true;
+  return ALLOWED_PREF_PREFIXES.some((p) => key.startsWith(p));
+}
+
 export function setPref(
   config: AppConfig,
   key: string,
   value: unknown,
 ): void {
+  if (!isAllowedPrefKey(key)) {
+    console.warn(`[config] setPref rejected unknown key: ${key}`);
+    return;
+  }
+  if (key === "__proto__" || key === "constructor" || key === "prototype") return;
   config.ui[key] = value;
   saveConfig(config);
 }

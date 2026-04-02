@@ -228,7 +228,15 @@ export function registerWorkspaceHandlers(
 
   ipcMain.handle("config:get", () => appConfig);
   ipcMain.handle("app:version", () => app.getVersion());
-  ipcMain.handle("app:restart", () => {
+  ipcMain.handle("app:restart", (event) => {
+    // Only allow the main window or settings window to trigger a restart.
+    const mainWin = ctx.mainWindow();
+    const senderWcId = event.sender.id;
+    const allowed = BrowserWindow.getAllWindows()
+      .filter((w) => w === mainWin || w.title === "Settings")
+      .map((w) => w.webContents.id);
+    if (!allowed.includes(senderWcId)) return;
+
     if (app.isPackaged) {
       app.relaunch();
       app.quit();

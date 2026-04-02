@@ -139,20 +139,37 @@ describe("getPref / setPref", () => {
     expect(getPref(config, "nonExistentPref_" + Date.now())).toBe(null);
   });
 
-  test("round-trips a boolean pref", () => {
+  test("round-trips a boolean pref via an allowed key", () => {
     const config = loadConfig();
-    const key = "_test_bool_" + Date.now();
-    setPref(config, key, true);
+    setPref(config, "gpuRenderer", true);
     const fresh = loadConfig();
-    expect(getPref(fresh, key)).toBe(true);
+    expect(getPref(fresh, "gpuRenderer")).toBe(true);
   });
 
-  test("round-trips a string pref", () => {
+  test("round-trips a string pref via an allowed key", () => {
     const config = loadConfig();
-    const key = "_test_str_" + Date.now();
-    setPref(config, key, "hello");
+    setPref(config, "terminalTarget", "auto");
     const fresh = loadConfig();
-    expect(getPref(fresh, key)).toBe("hello");
+    expect(getPref(fresh, "terminalTarget")).toBe("auto");
+  });
+
+  test("rejects unknown pref keys", () => {
+    const config = loadConfig();
+    setPref(config, "evil_key", "payload");
+    expect(getPref(config, "evil_key")).toBe(null);
+  });
+
+  test("rejects prototype pollution keys", () => {
+    const config = loadConfig();
+    setPref(config, "__proto__", { polluted: true });
+    // __proto__ should not have been written with our payload
+    expect((config.ui as any).polluted).toBeUndefined();
+  });
+
+  test("allows panel-width-* prefix keys", () => {
+    const config = loadConfig();
+    setPref(config, "panel-width-nav", 300);
+    expect(getPref(config, "panel-width-nav")).toBe(300);
   });
 });
 

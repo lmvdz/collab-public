@@ -194,7 +194,14 @@ function ensureSessionDir(): void {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
 }
 
+const SESSION_ID_RE = /^[0-9a-f]{16}$/;
+function assertSessionId(id: unknown): asserts id is string {
+  if (typeof id !== "string" || !SESSION_ID_RE.test(id))
+    throw new Error("Invalid session ID");
+}
+
 function metaPath(sessionId: string): string {
+  assertSessionId(sessionId);
   return path.join(SESSION_DIR, `${sessionId}.json`);
 }
 

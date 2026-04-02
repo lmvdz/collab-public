@@ -15,7 +15,8 @@ import {
   type WebContents,
 } from "electron";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import path, { join } from "node:path";
+import fs from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { fromCollabFileUrl } from "@collab/shared/collab-file-url";
 import {
@@ -665,7 +666,7 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:create",
-  (
+  async (
     event,
     params?: {
       cwd?: string;
@@ -674,20 +675,32 @@ ipcMain.handle(
       tileId?: string;
       target?: TerminalTarget;
     },
-  ) =>
-    pty.createSession(
-      params?.cwd,
+  ) => {
+    let cwd = params?.cwd;
+    if (typeof cwd === "string" && cwd.length > 0) {
+      const resolved = path.resolve(cwd);
+      try {
+        const s = await fs.stat(resolved);
+        if (!s.isDirectory()) cwd = undefined;
+      } catch {
+        cwd = undefined;  // falls back to homedir in createSession
+      }
+    }
+    return pty.createSession(
+      cwd,
       event.sender.id,
       params?.cols,
       params?.rows,
       params?.target,
       params?.tileId,
-    ),
+    );
+  },
 );
 
 ipcMain.handle(
   "pty:write",
   (event, { sessionId, data }: { sessionId: string; data: string }) => {
+    pty.assertSessionId(sessionId);
     if (typeof data !== "string" || data.length > 1_048_576) return;
     if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
     pty.writeToSession(sessionId, data);
@@ -697,6 +710,7 @@ ipcMain.handle(
 ipcMain.handle(
   "pty:send-raw-keys",
   (event, { sessionId, data }: { sessionId: string; data: string }) => {
+    pty.assertSessionId(sessionId);
     if (typeof data !== "string" || data.length > 1_048_576) return;
     if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
     pty.sendRawKeys(sessionId, data);
@@ -713,6 +727,7 @@ ipcMain.handle(
       rows,
     }: { sessionId: string; cols: number; rows: number },
   ) => {
+    pty.assertSessionId(sessionId);
     if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
     return pty.resizeSession(sessionId, cols, rows);
   },
@@ -721,6 +736,7 @@ ipcMain.handle(
 ipcMain.handle(
   "pty:kill",
   (event, { sessionId }: { sessionId: string }) => {
+    pty.assertSessionId(sessionId);
     if (!pty.isSessionOwner(sessionId, event.sender.id)) return;
     return pty.killSession(sessionId);
   },
@@ -735,20 +751,26 @@ ipcMain.handle(
       cols,
       rows,
     }: { sessionId: string; cols: number; rows: number },
-  ) =>
-    pty.reconnectSession(
+  ) => {
+    pty.assertSessionId(sessionId);
+    return pty.reconnectSession(
       sessionId, cols, rows, event.sender.id,
-    ),
+    );
+  },
 );
 
 ipcMain.handle(
   "pty:discover",
-  () => pty.discoverSessions(),
+  (event) => {
+    if (mainWindow && event.sender.id !== mainWindow.webContents.id) return [];
+    return pty.discoverSessions();
+  },
 );
 
 ipcMain.handle(
   "pty:read-meta",
   (event, sessionId: string) => {
+    pty.assertSessionId(sessionId);
     if (!pty.isSessionOwner(sessionId, event.sender.id)) return null;
     return readSessionMeta(sessionId);
   },
@@ -756,13 +778,16 @@ ipcMain.handle(
 
 ipcMain.handle(
   "pty:clean-detached",
-  (_event, activeSessionIds: string[]) =>
-    pty.cleanDetachedSessions(activeSessionIds),
+  (event, activeSessionIds: string[]) => {
+    if (mainWindow && event.sender.id !== mainWindow.webContents.id) return;
+    return pty.cleanDetachedSessions(activeSessionIds);
+  },
 );
 
 ipcMain.handle(
   "pty:foreground-process",
   (event, sessionId: string) => {
+    pty.assertSessionId(sessionId);
     if (!pty.isSessionOwner(sessionId, event.sender.id)) return null;
     return pty.getForegroundProcess(sessionId);
   },
@@ -774,6 +799,7 @@ ipcMain.handle(
     event,
     { sessionId, lines }: { sessionId: string; lines?: number },
   ) => {
+    pty.assertSessionId(sessionId);
     if (!pty.isSessionOwner(sessionId, event.sender.id)) return "";
     const safeLines = typeof lines === "number"
       ? Math.max(1, Math.min(lines, 10000))

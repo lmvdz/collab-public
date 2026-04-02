@@ -12,6 +12,7 @@ import {
   existsSync,
 } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import { basename, extname, join } from "node:path";
 import fm from "front-matter";
 import { saveConfig, type AppConfig } from "./config";
@@ -420,11 +421,13 @@ export function registerWorkspaceHandlers(
       _event,
       params: { root: string },
     ): Promise<TreeNode[]> => {
-      return readTreeRecursive(
-        params.root,
-        params.root,
-        fileFilterRef.current,
-      );
+      const resolved = path.resolve(params.root);
+      const workspace = ctx.getActiveWorkspacePath();
+      const resolvedWs = workspace ? path.resolve(workspace) : "";
+      if (!resolvedWs || (resolved !== resolvedWs && !resolved.startsWith(resolvedWs + path.sep))) {
+        throw new Error("Path outside workspace");
+      }
+      return readTreeRecursive(resolved, resolved, fileFilterRef.current);
     },
   );
 
@@ -436,6 +439,12 @@ export function registerWorkspaceHandlers(
       field: string,
       value: unknown,
     ): Promise<{ ok: boolean; retried?: boolean }> => {
+      const resolved = path.resolve(filePath);
+      const workspace = ctx.getActiveWorkspacePath();
+      const resolvedWs = workspace ? path.resolve(workspace) : "";
+      if (!resolvedWs || (resolved !== resolvedWs && !resolved.startsWith(resolvedWs + path.sep))) {
+        throw new Error("Path outside workspace");
+      }
       const MAX_ATTEMPTS = 3;
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         const fileStat = await stat(filePath);

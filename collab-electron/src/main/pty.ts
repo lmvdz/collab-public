@@ -51,6 +51,12 @@ import {
   type ResolvedTerminalTarget,
 } from "./terminal-target";
 
+const SESSION_ID_RE = /^[0-9a-f]{16}$/;
+export function assertSessionId(id: unknown): asserts id is string {
+  if (typeof id !== "string" || !SESSION_ID_RE.test(id))
+    throw new Error("Invalid session ID");
+}
+
 interface PtySession {
   pty: pty.IPty;
   shell: string;
@@ -83,7 +89,10 @@ const sessionOwners = new Map<string, number>();
  */
 export function isSessionOwner(sessionId: string, senderWebContentsId: number): boolean {
   const owner = sessionOwners.get(sessionId);
-  if (owner == null) return true; // legacy session without ownership tracking
+  if (owner == null) {
+    // Only allow if the session actually exists (legacy migration)
+    return sessions.has(sessionId) || sidecarSessionIds.has(sessionId);
+  }
   if (owner === senderWebContentsId) return true;
   // In in-process mode, the shell window is the effective sender for all sessions.
   if (shellWebContentsId != null && senderWebContentsId === shellWebContentsId) return true;
@@ -741,7 +750,13 @@ export async function createSession(
         ),
       );
     }
-    await Promise.all(postCreateTasks);
+    try {
+      await Promise.all(postCreateTasks);
+    } catch {
+      // Under WSL, the tmux server may not have registered the session yet
+      // when terminals are created in rapid succession.  The terminal will
+      // still work — these env vars / appearance tweaks are nice-to-have.
+    }
     lap("post-create tasks done (set-env ‖ appearance)");
 
     attachClient(sessionId, c, r, senderWebContentsId, tmuxTarget);

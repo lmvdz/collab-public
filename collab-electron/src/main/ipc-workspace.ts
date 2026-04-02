@@ -229,19 +229,20 @@ export function registerWorkspaceHandlers(
   ipcMain.handle("config:get", () => appConfig);
   ipcMain.handle("app:version", () => app.getVersion());
   ipcMain.handle("app:restart", (event) => {
-    // Only allow the main window or settings window to trigger a restart.
+    // Allow the main window and webview guests hosted within it (e.g. settings).
+    // BrowserWindow.fromWebContents returns null for <webview> guest contents,
+    // so we also accept null — IPC is only reachable via our own preload scripts.
     const mainWin = ctx.mainWindow();
-    const senderWcId = event.sender.id;
-    const allowed = BrowserWindow.getAllWindows()
-      .filter((w) => w === mainWin || w.title === "Settings")
-      .map((w) => w.webContents.id);
-    if (!allowed.includes(senderWcId)) return;
+    if (!mainWin) return;
+    const senderWin = BrowserWindow.fromWebContents(event.sender);
+    if (senderWin !== null && senderWin !== mainWin) return;
 
     if (app.isPackaged) {
       app.relaunch();
       app.quit();
     } else {
-      // Dev mode: reload all windows instead of relaunching
+      // Dev mode: reload all windows to pick up changes without killing
+      // the dev server (app.quit() would terminate the parent process).
       for (const win of BrowserWindow.getAllWindows()) {
         win.webContents.reloadIgnoringCache();
       }

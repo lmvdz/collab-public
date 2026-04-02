@@ -21,7 +21,7 @@
 
 const HISTORY_SIZE = 120;
 const OVERLAY_WIDTH = 280;
-const OVERLAY_HEIGHT = 160;
+const OVERLAY_HEIGHT = 180;
 const GRAPH_HEIGHT = 60;
 const GRAPH_Y = 90;
 const GRAPH_MARGIN = 8;
@@ -82,6 +82,11 @@ let gpuTimingAvailable = false;
 // External stats
 let terminalCount = 0;
 
+// Panel tracking
+/** @type {ResizeObserver | null} */
+let panelObserver = null;
+let rightPanelWidth = 0;
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -93,17 +98,44 @@ function createCanvas() {
   canvas.style.cssText = `
     position: fixed;
     top: 8px;
-    right: 8px;
+    right: ${8 + rightPanelWidth}px;
     width: ${OVERLAY_WIDTH}px;
     height: ${OVERLAY_HEIGHT}px;
     z-index: 99999;
     pointer-events: none;
     border-radius: 6px;
     image-rendering: auto;
+    transition: right 0.15s ease;
   `;
   ctx = canvas.getContext("2d");
   ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
   document.body.appendChild(canvas);
+
+  // Track the right panel width so the overlay doesn't hide behind it.
+  observeRightPanel();
+}
+
+function observeRightPanel() {
+  const panel = document.getElementById("panel-terminal");
+  if (!panel) return;
+
+  function updateOffset() {
+    // offsetWidth is 0 when the panel is collapsed (display: none or width: 0).
+    const w = panel.offsetWidth || 0;
+    if (w !== rightPanelWidth) {
+      rightPanelWidth = w;
+      if (canvas) canvas.style.right = `${8 + rightPanelWidth}px`;
+    }
+  }
+
+  updateOffset();
+
+  panelObserver = new ResizeObserver(updateOffset);
+  panelObserver.observe(panel);
+
+  // Also catch display:none toggles which don't fire ResizeObserver.
+  const mutObs = new MutationObserver(updateOffset);
+  mutObs.observe(panel, { attributes: true, attributeFilter: ["style", "class"] });
 }
 
 // ---------------------------------------------------------------------------

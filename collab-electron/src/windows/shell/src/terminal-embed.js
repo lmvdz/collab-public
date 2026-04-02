@@ -132,14 +132,18 @@ export async function createTerminal(container, sessionId, options = {}) {
 			console.log("[terminal-embed] WebGL renderer loaded");
 
 			// Attach the WebGL context to the perf overlay for GPU timer queries.
-			// The WebglAddon stores its context as _gl on the renderer.
+			// _renderer._gl is an internal property — access is wrapped in
+			// try/catch because xterm addon internals may change across versions.
+			// attachGL is idempotent (only attaches once), so calling this per
+			// terminal is safe — the first successful call wins.
+			// Deferred to rAF because the renderer initialises asynchronously
+			// during the first paint after loadAddon.
 			requestAnimationFrame(() => {
 				try {
-					const renderer = webglAddon._renderer;
-					const glCtx = renderer?._gl;
+					const glCtx = webglAddon?._renderer?._gl;
 					if (glCtx) attachGL(glCtx);
 				} catch {
-					// WebglAddon internals may change — non-fatal.
+					// Non-fatal — GPU timer will show "n/a".
 				}
 			});
 		} catch (err) {
@@ -147,6 +151,12 @@ export async function createTerminal(container, sessionId, options = {}) {
 			webglAddon = null;
 		}
 	}
+
+	// -- Perf overlay: CPU render timing ----------------------------------------
+	// term.onRender fires after xterm actually processes and paints queued
+	// data. We call markCpuEnd here so the perf overlay measures the full
+	// parse+render cost, not just the near-instant term.write() enqueue.
+	term.onRender(() => { markCpuEnd(); });
 
 	// -- Scroll handling -------------------------------------------------------
 	// Prevent wheel events from bubbling to the canvas pan/zoom handler.
@@ -195,11 +205,13 @@ export async function createTerminal(container, sessionId, options = {}) {
 			// writes are invisible.
 			term.write("\x1b[2J\x1b[H");
 		}
+		// Mark the start of CPU work. markCpuEnd is called from onRender
+		// (below) which fires after xterm actually processes and paints the
+		// data — measuring the real parse+render cost, not just the enqueue.
 		markCpuStart();
 		for (const chunk of chunks) {
 			term.write(chunk);
 		}
-		markCpuEnd();
 	};
 
 	/**

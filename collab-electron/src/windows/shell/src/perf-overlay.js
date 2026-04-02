@@ -2,9 +2,9 @@
  * Performance overlay — game-style HUD showing real-time rendering metrics.
  *
  * Displays:
- *   - FPS counter (1-second smoothed)
+ *   - FPS counter (1-second smoothed, with running estimate for first second)
  *   - Frame time graph (rolling sparkline, last 120 samples)
- *   - CPU time (JS-side frame work)
+ *   - CPU time (JS-side terminal render cost, measured via xterm onRender)
  *   - GPU time (via EXT_disjoint_timer_query_webgl2, when available)
  *   - Memory usage (Chromium performance.memory)
  *   - Terminal count
@@ -26,6 +26,8 @@ const GRAPH_HEIGHT = 60;
 const GRAPH_Y = 90;
 const GRAPH_MARGIN = 8;
 const TARGET_FPS = 60;
+/** Maximum milliseconds shown on the graph Y-axis. */
+const GRAPH_MAX_MS = 50;
 const BG_COLOR = "rgba(0, 0, 0, 0.75)";
 const TEXT_COLOR = "#e0e0e0";
 const ACCENT_GREEN = "#4caf50";
@@ -53,7 +55,7 @@ let visible = false;
 /** @type {number} */
 let rafId = 0;
 
-// Frame timing
+// Frame timing — lastFrameTime = 0 is a sentinel meaning "skip first sample"
 let lastFrameTime = 0;
 let frameCount = 0;
 let fpsAccum = 0;
@@ -65,7 +67,9 @@ const cpuTimes = new Float32Array(HISTORY_SIZE);
 const gpuTimes = new Float32Array(HISTORY_SIZE);
 let historyIndex = 0;
 
-// CPU timing — set externally via markCpuStart / markCpuEnd
+// CPU timing — set externally via markCpuStart / markCpuEnd.
+// Measures the actual xterm render pass (via term.onRender), not just the
+// term.write() enqueue call which returns near-instantly.
 let cpuStart = 0;
 let lastCpuTime = 0;
 
@@ -78,6 +82,7 @@ let timerExt = null;
 let pendingQuery = null;
 let lastGpuTime = 0;
 let gpuTimingAvailable = false;
+let glAttached = false;
 
 // External stats
 let terminalCount = 0;
@@ -85,16 +90,27 @@ let terminalCount = 0;
 // Panel tracking
 /** @type {ResizeObserver | null} */
 let panelObserver = null;
+/** @type {MutationObserver | null} */
+let panelMutationObserver = null;
 let rightPanelWidth = 0;
+
+// Keyboard
+/** @type {((e: KeyboardEvent) => void) | null} */
+let keydownHandler = null;
+
+// DPR tracking
+let currentDpr = 0;
 
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
 
 function createCanvas() {
+  currentDpr = window.devicePixelRatio || 1;
   canvas = document.createElement("canvas");
-  canvas.width = OVERLAY_WIDTH * (window.devicePixelRatio || 1);
-  canvas.height = OVERLAY_HEIGHT * (window.devicePixelRatio || 1);
+  canvas.width = OVERLAY_WIDTH * currentDpr;
+  canvas.height = OVERLAY_HEIGHT * currentDpr;
+  // Start without transition to avoid animating the initial position.
   canvas.style.cssText = `
     position: fixed;
     top: 8px;
@@ -105,14 +121,30 @@ function createCanvas() {
     pointer-events: none;
     border-radius: 6px;
     image-rendering: auto;
-    transition: right 0.15s ease;
   `;
   ctx = canvas.getContext("2d");
-  ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+  ctx.scale(currentDpr, currentDpr);
   document.body.appendChild(canvas);
 
-  // Track the right panel width so the overlay doesn't hide behind it.
+  // Enable the CSS transition after the first layout so the initial
+  // position does not animate.
+  requestAnimationFrame(() => {
+    if (canvas) canvas.style.transition = "right 0.15s ease";
+  });
+
   observeRightPanel();
+}
+
+/** Re-create the canvas backing store when DPR changes (e.g. window moved
+ *  between monitors with different scaling). */
+function handleDprChange() {
+  const dpr = window.devicePixelRatio || 1;
+  if (dpr === currentDpr || !canvas || !ctx) return;
+  currentDpr = dpr;
+  canvas.width = OVERLAY_WIDTH * dpr;
+  canvas.height = OVERLAY_HEIGHT * dpr;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // reset before re-scaling
+  ctx.scale(dpr, dpr);
 }
 
 function observeRightPanel() {
@@ -120,7 +152,6 @@ function observeRightPanel() {
   if (!panel) return;
 
   function updateOffset() {
-    // offsetWidth is 0 when the panel is collapsed (display: none or width: 0).
     const w = panel.offsetWidth || 0;
     if (w !== rightPanelWidth) {
       rightPanelWidth = w;
@@ -134,8 +165,13 @@ function observeRightPanel() {
   panelObserver.observe(panel);
 
   // Also catch display:none toggles which don't fire ResizeObserver.
-  const mutObs = new MutationObserver(updateOffset);
-  mutObs.observe(panel, { attributes: true, attributeFilter: ["style", "class"] });
+  panelMutationObserver = new MutationObserver(updateOffset);
+  panelMutationObserver.observe(panel, { attributes: true, attributeFilter: ["style", "class"] });
+}
+
+function disconnectObservers() {
+  if (panelObserver) { panelObserver.disconnect(); panelObserver = null; }
+  if (panelMutationObserver) { panelMutationObserver.disconnect(); panelMutationObserver = null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -144,20 +180,31 @@ function observeRightPanel() {
 
 /**
  * Attach a WebGL2 context for GPU timer queries.
- * Call once after the shared GL context is created.
+ * Only attaches once — subsequent calls are no-ops.
  * @param {WebGL2RenderingContext} glContext
  */
 export function attachGL(glContext) {
+  if (glAttached) return;
   gl = glContext;
   timerExt = gl.getExtension("EXT_disjoint_timer_query_webgl2");
   gpuTimingAvailable = timerExt !== null;
+  glAttached = true;
 }
 
 /**
  * Begin a GPU timer query. Call before rendering.
  */
 export function gpuTimerBegin() {
-  if (!gpuTimingAvailable || !gl || pendingQuery) return;
+  if (!gpuTimingAvailable || !gl || !timerExt) return;
+  if (gl.isContextLost()) return;
+
+  // Reclaim any stale query (e.g. from a previous frame that never ended
+  // cleanly, or after context restore).
+  if (pendingQuery) {
+    gl.deleteQuery(pendingQuery);
+    pendingQuery = null;
+  }
+
   pendingQuery = gl.createQuery();
   gl.beginQuery(timerExt.TIME_ELAPSED_EXT, pendingQuery);
 }
@@ -166,18 +213,25 @@ export function gpuTimerBegin() {
  * End the GPU timer query. Call after rendering.
  */
 export function gpuTimerEnd() {
-  if (!gpuTimingAvailable || !gl || !pendingQuery) return;
+  if (!gpuTimingAvailable || !gl || !timerExt || !pendingQuery) return;
+  if (gl.isContextLost()) return;
   gl.endQuery(timerExt.TIME_ELAPSED_EXT);
 }
 
 /**
  * Collect the GPU timer result (non-blocking).
- * Must be called on the next frame or later.
+ * Called every frame; returns early if the result is not yet available.
  */
 function collectGpuTime() {
-  if (!gl || !pendingQuery) return;
+  if (!gl || !timerExt || !pendingQuery) return;
 
-  // Check for disjoint — GPU timer results are unreliable
+  if (gl.isContextLost()) {
+    pendingQuery = null;
+    return;
+  }
+
+  // Check for disjoint — GPU timer results are unreliable after power
+  // management events, context switches, etc.
   const disjoint = gl.getParameter(timerExt.GPU_DISJOINT_EXT);
   if (disjoint) {
     gl.deleteQuery(pendingQuery);
@@ -189,7 +243,7 @@ function collectGpuTime() {
   if (!available) return; // not ready yet, try next frame
 
   const nsElapsed = gl.getQueryParameter(pendingQuery, gl.QUERY_RESULT);
-  lastGpuTime = nsElapsed / 1_000_000; // ns → ms
+  lastGpuTime = nsElapsed / 1_000_000; // ns -> ms
   gl.deleteQuery(pendingQuery);
   pendingQuery = null;
 }
@@ -235,6 +289,9 @@ function msColor(ms) {
 }
 
 function drawOverlay(now) {
+  // DPR may change between frames (window moved to another monitor).
+  handleDprChange();
+
   // Frame timing
   const dt = now - lastFrameTime;
   lastFrameTime = now;
@@ -245,7 +302,14 @@ function drawOverlay(now) {
     currentFps = Math.round((frameCount * 1000) / fpsAccum);
     frameCount = 0;
     fpsAccum = 0;
+  } else if (currentFps === 0 && fpsAccum > 100) {
+    // Running estimate for the first second so FPS isn't stuck at 0.
+    currentFps = Math.round((frameCount * 1000) / fpsAccum);
   }
+
+  // Collect GPU timer from previous frame (before recording history so the
+  // GPU sample aligns as closely as possible with frame/CPU samples).
+  collectGpuTime();
 
   // Record history
   frameTimes[historyIndex] = dt;
@@ -253,13 +317,10 @@ function drawOverlay(now) {
   gpuTimes[historyIndex] = lastGpuTime;
   historyIndex = (historyIndex + 1) % HISTORY_SIZE;
 
-  // Collect GPU timer from previous frame
-  collectGpuTime();
-
   // Memory
   const mem = /** @type {any} */ (performance).memory;
-  const usedMB = mem ? (mem.usedJSHeapSize / (1024 * 1024)).toFixed(0) : "—";
-  const totalMB = mem ? (mem.totalJSHeapSize / (1024 * 1024)).toFixed(0) : "—";
+  const usedMB = mem ? (mem.usedJSHeapSize / (1024 * 1024)).toFixed(0) : "\u2014";
+  const totalMB = mem ? (mem.totalJSHeapSize / (1024 * 1024)).toFixed(0) : "\u2014";
 
   // Draw
   const w = OVERLAY_WIDTH;
@@ -324,7 +385,7 @@ function drawOverlay(now) {
   ctx.fillRect(gx, gy, gw, gh);
 
   // 16.67ms target line
-  const targetY = gy + gh - (16.67 / 50) * gh;
+  const targetY = gy + gh - (16.67 / GRAPH_MAX_MS) * gh;
   ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
@@ -334,10 +395,10 @@ function drawOverlay(now) {
   ctx.setLineDash([]);
 
   // Draw graph lines
-  drawGraphLine(gx, gy, gw, gh, frameTimes, GRAPH_LINE_FRAME, 50);
-  drawGraphLine(gx, gy, gw, gh, cpuTimes, GRAPH_LINE_CPU, 50);
+  drawGraphLine(gx, gy, gw, gh, frameTimes, GRAPH_LINE_FRAME);
+  drawGraphLine(gx, gy, gw, gh, cpuTimes, GRAPH_LINE_CPU);
   if (gpuTimingAvailable) {
-    drawGraphLine(gx, gy, gw, gh, gpuTimes, GRAPH_LINE_GPU, 50);
+    drawGraphLine(gx, gy, gw, gh, gpuTimes, GRAPH_LINE_GPU);
   }
 
   // Graph legend
@@ -354,23 +415,24 @@ function drawOverlay(now) {
   ctx.fillText("16.67ms", gx + gw - 42, targetY - 3);
 }
 
-function drawGraphLine(gx, gy, gw, gh, data, color, maxMs) {
+function drawGraphLine(gx, gy, gw, gh, data, color) {
   const step = gw / (HISTORY_SIZE - 1);
+  ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
 
   for (let i = 0; i < HISTORY_SIZE; i++) {
     const idx = (historyIndex + i) % HISTORY_SIZE;
-    const val = Math.min(data[idx], maxMs);
+    const val = Math.min(data[idx], GRAPH_MAX_MS);
     const x = gx + i * step;
-    const y = gy + gh - (val / maxMs) * gh;
+    const y = gy + gh - (val / GRAPH_MAX_MS) * gh;
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }
 
   ctx.stroke();
-  ctx.lineWidth = 1;
+  ctx.restore();
 }
 
 function drawLegendDot(x, y, color, label) {
@@ -386,14 +448,23 @@ function drawLegendDot(x, y, color, label) {
 
 function tick(now) {
   if (!visible) return;
+
+  // Skip the first frame to avoid scheduler jitter in the initial dt.
+  if (lastFrameTime === 0) {
+    lastFrameTime = now;
+    rafId = requestAnimationFrame(tick);
+    return;
+  }
+
   drawOverlay(now);
   rafId = requestAnimationFrame(tick);
 }
 
 function startLoop() {
-  lastFrameTime = performance.now();
+  lastFrameTime = 0; // sentinel: skip first sample
   frameCount = 0;
   fpsAccum = 0;
+  currentFps = 0;
   rafId = requestAnimationFrame(tick);
 }
 
@@ -429,10 +500,13 @@ export function isVisible() {
 // ---------------------------------------------------------------------------
 
 export function initKeyboardShortcut() {
-  window.addEventListener("keydown", (e) => {
+  // Guard against double-registration (e.g. hot reload in dev).
+  if (keydownHandler) window.removeEventListener("keydown", keydownHandler);
+  keydownHandler = (e) => {
     if (e.key === "F3" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       toggle();
     }
-  });
+  };
+  window.addEventListener("keydown", keydownHandler);
 }

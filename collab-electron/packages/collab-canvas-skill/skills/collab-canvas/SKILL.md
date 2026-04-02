@@ -193,6 +193,16 @@ collab-canvas terminal read <id> --lines 100
 6. **Graph tiles support incremental updates**: append nodes to a `.graph.json` file and the graph tile smoothly incorporates them.
 7. **Terminal tiles need time to initialize**: after `tile create term`, wait a few seconds before `terminal write` so the PTY session can start.
 
+## Setup
+
+The `collab-canvas` CLI is installed to `~/.local/bin/`. If the command is not found, the user needs to add it to their PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add this to `~/.zshrc` (macOS) or `~/.bashrc` (Linux) to persist across sessions.
+
 ## Exit Codes
 
 | Code | Meaning                                    |

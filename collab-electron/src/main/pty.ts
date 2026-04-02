@@ -58,11 +58,11 @@ interface PtySession {
   disposables: IDisposable[];
   backend: "tmux" | "direct";
   ownerWebContentsId?: number;
-  target?: string;
+  target?: TerminalTarget | undefined;
   command?: string;
   args?: string[];
   cwdHostPath?: string;
-  cwdGuestPath?: string;
+  cwdGuestPath?: string | undefined;
   createdAt?: string;
   ringBuffer?: RingBuffer;
 }
@@ -189,9 +189,9 @@ function listKnownTmuxTargets(metaFiles: string[] = []): Array<TerminalTarget | 
     const sessionId = file.replace(".json", "");
     const meta = readSessionMeta(sessionId);
     if ((meta?.backend ?? "tmux") !== "tmux") continue;
-    const target = typeof meta.target === "string"
+    const target = meta ? typeof meta.target === "string"
       ? meta.target as TerminalTarget
-      : undefined;
+      : undefined : undefined;
     targets.set(tmuxTargetKey(target), target);
   }
 
@@ -1478,12 +1478,16 @@ const statusTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const STATUS_DEBOUNCE_MS = 500;
 
 function sendToMainWindow(channel: string, payload: unknown): void {
-  const { BrowserWindow } = require("electron");
-  const wins = BrowserWindow.getAllWindows();
-  for (const win of wins) {
-    if (!win.isDestroyed()) {
-      win.webContents.send(channel, payload);
+  try {
+    const { BrowserWindow } = require("electron");
+    const wins = BrowserWindow.getAllWindows();
+    for (const win of wins) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(channel, payload);
+      }
     }
+  } catch {
+    // Electron not available (e.g. during tests)
   }
 }
 

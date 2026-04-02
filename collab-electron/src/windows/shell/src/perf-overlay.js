@@ -81,6 +81,11 @@ let timerExt = null;
 /** @type {WebGLQuery | null} */
 let pendingQuery = null;
 let queryActive = false;
+/** Reference count: how many terminals have called gpuTimerBegin without a
+ *  matching gpuTimerEnd yet.  The actual GL query is only started on the
+ *  0→1 transition and ended on the 1→0 transition, so with N terminals we
+ *  measure aggregate GPU time for the whole frame. */
+let timerRefCount = 0;
 let lastGpuTime = 0;
 let gpuTimingAvailable = false;
 let glAttached = false;
@@ -193,21 +198,38 @@ export function attachGL(glContext) {
   glAttached = true;
 }
 
+/** Reset all GPU timer state to a clean idle. */
+function resetGpuTimer() {
+  if (pendingQuery && gl) {
+    try { gl.deleteQuery(pendingQuery); } catch { /* context lost */ }
+  }
+  pendingQuery = null;
+  queryActive = false;
+  timerRefCount = 0;
+}
+
 /**
  * Begin a GPU timer query. Call before rendering.
+ *
+ * Multiple terminals may call this per frame — we reference-count so the
+ * actual GL query spans from the first begin to the last end, measuring
+ * aggregate GPU time for the whole frame.
  */
 export function gpuTimerBegin() {
   if (!gpuTimingAvailable || !gl || !timerExt) return;
-  if (gl.isContextLost()) return;
+  if (gl.isContextLost()) { resetGpuTimer(); return; }
+
+  timerRefCount++;
+  if (timerRefCount > 1) return; // query already running
 
   // Reclaim any stale query (e.g. from a previous frame that never ended
   // cleanly, or after context restore).
   if (pendingQuery) {
     if (queryActive) {
-      gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+      try { gl.endQuery(timerExt.TIME_ELAPSED_EXT); } catch { /* ignore */ }
       queryActive = false;
     }
-    gl.deleteQuery(pendingQuery);
+    try { gl.deleteQuery(pendingQuery); } catch { /* ignore */ }
     pendingQuery = null;
   }
 
@@ -218,11 +240,24 @@ export function gpuTimerBegin() {
 
 /**
  * End the GPU timer query. Call after rendering.
+ *
+ * The actual GL endQuery only fires when the last terminal in this frame
+ * calls gpuTimerEnd (refcount drops to 0).
  */
 export function gpuTimerEnd() {
-  if (!gpuTimingAvailable || !gl || !timerExt || !pendingQuery || !queryActive) return;
-  if (gl.isContextLost()) return;
-  gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+  if (!gpuTimingAvailable || !gl || !timerExt) return;
+  if (gl.isContextLost()) { resetGpuTimer(); return; }
+
+  timerRefCount = Math.max(0, timerRefCount - 1);
+  if (timerRefCount > 0) return; // other terminals still rendering
+
+  if (!pendingQuery || !queryActive) return;
+  try {
+    gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+  } catch {
+    resetGpuTimer();
+    return;
+  }
   queryActive = false;
 }
 
@@ -234,7 +269,7 @@ function collectGpuTime() {
   if (!gl || !timerExt || !pendingQuery || queryActive) return;
 
   if (gl.isContextLost()) {
-    pendingQuery = null;
+    resetGpuTimer();
     return;
   }
 

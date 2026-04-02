@@ -255,6 +255,12 @@ export function createTileManager({
 		const dom = tileDOMs.get(tile.id);
 		if (!dom) return;
 
+		const t0 = performance.now();
+		const lap = (label) => {
+			const ms = (performance.now() - t0).toFixed(1);
+			console.log(`[tile-manager] spawnTerminalDiv +${ms}ms  ${label}`);
+		};
+
 		const container = document.createElement("div");
 		container.className = "terminal-embed-container";
 		container.style.width = "100%";
@@ -268,6 +274,7 @@ export function createTileManager({
 		let restored = false;
 
 		if (sessionId) {
+			lap("ptyReconnect start");
 			try {
 				const result = await window.shellApi.ptyReconnect(sessionId, 80, 24);
 				scrollbackData = result.scrollback;
@@ -276,16 +283,21 @@ export function createTileManager({
 			} catch {
 				sessionId = null;
 			}
+			lap("ptyReconnect done");
 		}
 
 		if (!sessionId) {
+			lap("ptyCreate start");
 			const result = await window.shellApi.ptyCreate(tile.cwd);
 			sessionId = result.sessionId;
 			tile.ptySessionId = sessionId;
 			saveCanvasDebounced();
+			lap("ptyCreate done");
 		}
 
+		lap("createTerminal start");
 		const handle = await createTerminal(container, sessionId, { scrollbackData, mode, restored });
+		lap("createTerminal done");
 
 		if (onTerminalSessionCreated) {
 			onTerminalSessionCreated(tile);
@@ -294,6 +306,7 @@ export function createTileManager({
 		if (autoFocus) {
 			handle.focus();
 		}
+		lap("spawnTerminalDiv complete");
 	}
 
 	function spawnTerminal(tile, autoFocus = false) {

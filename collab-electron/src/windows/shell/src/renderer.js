@@ -109,10 +109,6 @@ async function init() {
 	const updatePill = document.getElementById("update-pill");
 	const dragDropOverlay =
 		document.getElementById("drag-drop-overlay");
-	const loadingOverlay =
-		document.getElementById("loading-overlay");
-	const loadingStatusEl =
-		document.getElementById("loading-status");
 	const tileLayer = document.getElementById("tile-layer");
 	const panelTerminal =
 		document.getElementById("panel-terminal");
@@ -1213,15 +1209,7 @@ async function init() {
 
 	// -- Loading --
 
-	window.shellApi.onLoadingStatus((message) => {
-		loadingStatusEl.textContent = message;
-	});
-
 	window.shellApi.onLoadingDone(() => {
-		loadingOverlay.classList.add("fade-out");
-		setTimeout(() => {
-			loadingOverlay.remove();
-		}, 350);
 		checkFirstLaunchDialog();
 	});
 

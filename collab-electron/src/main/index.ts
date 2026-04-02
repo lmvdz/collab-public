@@ -465,7 +465,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%}
 .st{color:var(--muted);font-size:11px;letter-spacing:.04em}
 </style></head><body>
 <canvas id="g"></canvas>
-<div class="center"><div class="wm">collaborator</div><div class="bt"><div class="bf"></div></div><div class="st">Loading\u2026</div></div>
+<div class="center"><div class="wm">collaborator</div><div class="bt"><div class="bf"></div></div><div class="st" id="st"></div></div>
 <script>
 var c=document.getElementById("g"),x=c.getContext("2d"),d=devicePixelRatio||1;
 c.width=c.offsetWidth*d;c.height=c.offsetHeight*d;x.setTransform(d,0,0,d,0,0);
@@ -481,7 +481,26 @@ if(a<0)continue;var al=Math.min(a/.3,1),p=.5+.5*Math.sin(t*2-dd*4),hi=p>.92&&a>.
 x.globalAlpha=al*(hi?1:.7);x.fillStyle=hi?dh:dc;
 x.beginPath();x.arc(px,py,hi?1.8:1,0,6.283);x.fill()}
 x.globalAlpha=1;requestAnimationFrame(draw)}requestAnimationFrame(draw);
-<\/script></body></html>`;
+var msgs=["Pondering","Ruminating","Manifesting","Percolating","Coalescing",
+"Vibing","Synthesizing","Noodling","Concocting","Fermenting",
+"Marinating","Simmering","Crystallizing","Conjuring","Transmuting",
+"Effervescing","Calibrating","Harmonizing","Orchestrating","Materializing",
+"Incubating","Galvanizing","Catalyzing","Distilling","Unfurling"],
+se=document.getElementById("st"),used=[];
+function pick(){if(used.length>=msgs.length)used=[];var i;do{i=Math.floor(Math.random()*msgs.length)}while(used.includes(i));
+used.push(i);return msgs[i]}
+var TI=60,DI=35,WAIT=1500;
+function typeOut(str,cb){var i=0;se.innerHTML='<span class="cu"></span>';
+var iv=setInterval(function(){i++;se.innerHTML=str.slice(0,i)+'<span class="cu"></span>';
+if(i>=str.length){clearInterval(iv);cb()}},TI)}
+function eraseOut(str,cb){var i=str.length;se.innerHTML=str+'<span class="cu"></span>';
+var iv=setInterval(function(){i--;se.innerHTML=str.slice(0,i)+'<span class="cu"></span>';
+if(i<=0){clearInterval(iv);cb()}},DI)}
+function cycle(){var w=pick()+"...";typeOut(w,function(){setTimeout(function(){eraseOut(w,function(){setTimeout(cycle,200)})},WAIT)})}
+cycle();
+<\/script><style>.cu{display:inline-block;width:1.5px;height:1em;background:var(--muted);vertical-align:text-bottom;
+margin-left:1px;animation:blink .8s step-end infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}<\/style></body></html>`;
 
 function createSplashWindow(
   display: Electron.Display,
@@ -904,8 +923,12 @@ app.whenReady().then(async () => {
 
   shuttingDown = false;
 
-  config = loadConfig();
-  installCli();
+  // Show splash as early as possible — before heavy init work.
+  buildAppMenu();
+  createWindow();
+  registerToggleShortcuts(mainWindow!);
+
+  // Heavy init runs while the splash is visible.
   watcher.startWorker();
   registerIpcHandlers(config);
   registerIntegrationsIpc();
@@ -918,16 +941,13 @@ app.whenReady().then(async () => {
     getTerminalMode() !== "tmux"
     && getTerminalBackend() === "sidecar"
   ) {
-    try {
-      await pty.ensureSidecar();
-    } catch (err) {
+    pty.ensureSidecar().catch((err) => {
       console.error("Sidecar failed to start:", err);
-    }
+    });
   }
 
-  buildAppMenu();
-  createWindow();
-  registerToggleShortcuts(mainWindow!);
+  // Defer CLI installation — not needed for startup.
+  setTimeout(() => installCli(), 3000);
 
   initMainAnalytics();
   trackEvent("app_launched");

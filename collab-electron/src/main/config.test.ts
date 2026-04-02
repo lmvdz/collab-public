@@ -189,3 +189,56 @@ describe("getTerminalTarget", () => {
     expect(getTerminalTarget()).toBe("auto");
   });
 });
+
+// ---------------------------------------------------------------------------
+// getTerminalMode
+// ---------------------------------------------------------------------------
+
+describe("getTerminalMode", () => {
+  test("returns 'tmux' or 'sidecar'", () => {
+    const mode = getTerminalMode();
+    expect(mode === "tmux" || mode === "sidecar").toBe(true);
+  });
+
+  test("returns 'sidecar' on non-darwin platforms", () => {
+    // On Windows (which CI and this dev env run), the default is always sidecar
+    if (process.platform !== "darwin") {
+      expect(getTerminalMode()).toBe("sidecar");
+    }
+  });
+
+  test("respects explicit pref value", () => {
+    const config = loadConfig();
+    setPref(config, "terminalMode", "tmux");
+    // On non-darwin, getTerminalMode always returns sidecar regardless of pref
+    if (process.platform === "darwin") {
+      expect(getTerminalMode()).toBe("tmux");
+    } else {
+      expect(getTerminalMode()).toBe("sidecar");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getTerminalBackend
+// ---------------------------------------------------------------------------
+
+describe("getTerminalBackend", () => {
+  test("returns 'direct' or 'sidecar'", () => {
+    const backend = getTerminalBackend();
+    expect(backend === "direct" || backend === "sidecar").toBe(true);
+  });
+
+  test("returns 'direct' on win32", () => {
+    if (process.platform === "win32") {
+      expect(getTerminalBackend()).toBe("direct");
+    }
+  });
+
+  test("returns valid backend when pref is invalid", () => {
+    const config = loadConfig();
+    setPref(config, "terminalBackend", "bogus");
+    const backend = getTerminalBackend();
+    expect(backend === "direct" || backend === "sidecar").toBe(true);
+  });
+});
